@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}[hidden]{display:none!important}</style>
+<title>Vertical Allocation Explorer</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: control rail (allocation + terms) beside a results column; optimizer and assumptions below as full-width bands */
+:root{
+  --bg:#f5f6f8; --panel:#ffffff; --fg:#17202c; --muted:#5a6676; --line:#dde2e9; --soft:#eef1f5;
+  --accent:#2f5bd3; --accent-ink:#ffffff;
+  --ls:#1b8a6b; --sw:#2f5bd3; --ht:#b9711b; --ed:#7a4fb5;
+  --good:#1b7f4a; --warn:#a86a00; --bad:#b33a3a;
+  --display:"IBM Plex Sans Condensed","Arial Narrow",Arial,sans-serif;
+  --body:"IBM Plex Sans",-apple-system,"Segoe UI",Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f141b; --panel:#161d27; --fg:#e4e9f0; --muted:#97a3b3; --line:#2a3442; --soft:#1d2632;
+  --accent:#7d9cff; --accent-ink:#0f141b; --ls:#4cc39f; --sw:#7d9cff; --ht:#e2a24f; --ed:#b892ea;
+  --good:#5ccf8f; --warn:#e3b04f; --bad:#f07a7a; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f141b; --panel:#161d27; --fg:#e4e9f0; --muted:#97a3b3; --line:#2a3442; --soft:#1d2632;
+  --accent:#7d9cff; --accent-ink:#0f141b; --ls:#4cc39f; --sw:#7d9cff; --ht:#e2a24f; --ed:#b892ea;
+  --good:#5ccf8f; --warn:#e3b04f; --bad:#f07a7a; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:14px/1.5 var(--body);margin:0}
+.wrap{max-width:1240px;margin:0 auto;padding-block:24px 48px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:20px}
+header h1{font:600 30px/1.1 var(--display);margin:0 0 6px;letter-spacing:-.01em;text-wrap:balance}
+header p{margin:0;color:var(--muted);max-width:78ch}
+.eyebrow{font:500 11px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.grid{display:grid;grid-template-columns:minmax(0,420px) minmax(0,1fr);gap:20px;align-items:start}
+@media (max-width:900px){.grid{grid-template-columns:minmax(0,1fr)}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;min-width:0}
+h2{font:600 18px/1.2 var(--display);margin:0 0 12px;letter-spacing:.005em}
+h3{font:600 13px/1.2 var(--body);margin:0;text-transform:uppercase;letter-spacing:.06em}
+.vgroup{display:grid;gap:2px;margin-top:14px;min-width:0}
+#sizing{min-width:0}
+#sizing table input{max-width:100%}
+#sizing th,#sizing td{padding:4px 3px}
+.vhead{display:flex;justify-content:space-between;align-items:center;padding-bottom:6px;border-bottom:2px solid var(--vc)}
+.vhead span{font:500 12px var(--mono);color:var(--muted)}
+.row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--soft)}
+.row .nm{min-width:0}
+.row .nm b{font-weight:500;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .nm small{color:var(--muted);font:12px var(--mono)}
+.conf{font:500 10px var(--mono);text-transform:uppercase;letter-spacing:.05em;padding:2px 6px;border-radius:10px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.conf.Anchored{color:var(--good);border-color:var(--good)}
+.conf.Judgment{color:var(--warn);border-color:var(--warn)}
+.step{display:flex;align-items:center;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.step button{width:28px;height:28px;border:0;background:var(--soft);color:var(--fg);font:500 15px var(--mono);cursor:pointer}
+.step button:hover{background:var(--line)}
+.step input{width:36px;height:28px;border:0;text-align:center;background:var(--panel);color:var(--fg);font:500 14px var(--mono)}
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.presets{display:flex;flex-wrap:wrap;gap:6px}
+.btn{border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:6px;padding:6px 10px;font:500 13px var(--body);cursor:pointer}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn:disabled{opacity:.5;cursor:default}
+.terms{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;margin-top:4px}
+.terms label{display:grid;gap:3px;font-size:12px;color:var(--muted)}
+.terms .val{display:flex;justify-content:space-between;color:var(--fg);font:500 13px var(--mono)}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+@media (max-width:600px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.kpi{background:var(--panel);padding:12px 14px;min-width:0}
+.kpi .l{font-size:12px;color:var(--muted)}
+.kpi .v{font:500 24px/1.2 var(--mono);font-variant-numeric:tabular-nums}
+.kpi .s{font:12px var(--mono);color:var(--muted)}
+.kpi .v.good{color:var(--good)} .kpi .v.bad{color:var(--bad)}
+.chart{width:100%;height:auto;display:block}
+.chart text{fill:var(--muted);font:11px var(--mono)}
+.mix{display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--soft);margin:6px 0 2px}
+.mix div{height:100%}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font:12px var(--mono);color:var(--muted)}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.note{color:var(--muted);font-size:13px;max-width:90ch}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th,td{padding:6px 8px;border-bottom:1px solid var(--soft);text-align:right;white-space:nowrap}
+th{font:500 11px var(--mono);text-transform:uppercase;letter-spacing:.04em;color:var(--muted);vertical-align:bottom}
+td:first-child,th:first-child{text-align:left}
+td.num{font-family:var(--mono)}
+td .zero{color:var(--line)}
+tr.vsep td{border-top:2px solid var(--line)}
+.objective{font-weight:500}
+.optgrid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:20px}
+#opttable th{white-space:normal;min-width:72px}
+#opttable td{padding:5px 6px}
+@media (max-width:900px){.optgrid{grid-template-columns:minmax(0,1fr)}}
+.progress{font:12px var(--mono);color:var(--muted)}
+details summary{cursor:pointer;font:600 18px/1.2 var(--display)}
+.atab input{width:56px;padding:3px 4px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--fg);font:12px var(--mono);text-align:right}
+.atab td.sum.bad{color:var(--bad);font-weight:600}
+.stress{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:10px 0 14px}
+@media (max-width:700px){.stress{grid-template-columns:minmax(0,1fr)}}
+.callout{border-left:3px solid var(--warn);padding:8px 12px;background:var(--soft);border-radius:0 6px 6px 0;font-size:13px}
+ul.src{margin:0;padding-left:18px;display:grid;gap:6px}
+ul.src a{color:var(--accent)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Elevate Ventures · dual-mandate fund model</div>
+    <h1>Vertical Allocation Explorer</h1>
+    <p>The fund has two sleeves. The economic-development (ED) sleeve uses Elevate's Worst/Base/Best outcome tables. The VC sleeve uses outcome buckets per subvertical and stage from published venture data. Each simulated fund lands in a market regime that moves both sleeves together. Change the ED share or the VC mix to see the simulated distribution of fund outcomes, or run the optimizer under four objectives.</p>
+  </header>
+
+  <div class="grid">
+    <section class="panel" aria-labelledby="alloc-h">
+      <h2 id="alloc-h">Portfolio</h2>
+      <div class="vgroup" style="--vc:var(--ed);margin-top:0"><div class="vhead"><h3>Economic development sleeve</h3><span id="edhead"></span></div><div id="edctl"></div></div>
+      <div class="vhead" style="--vc:var(--line);margin-top:18px;border-bottom:0;padding-bottom:0"><h3>VC sleeve</h3><span id="vchead"></span></div>
+      <div class="presets" id="presets" style="margin-top:8px"></div>
+      <div id="alloc"></div>
+      <div class="vgroup" style="--vc:var(--accent);margin-top:18px"><div class="vhead"><h3>Check sizing &amp; follow-ons</h3><span>VC sleeve</span></div><div id="sizing"></div></div>
+      <div style="margin-top:16px">
+        <h3 style="margin-bottom:10px">Fund terms</h3>
+        <div class="terms" id="terms"></div>
+      </div>
+    </section>
+
+    <section style="display:grid;gap:16px;min-width:0">
+      <div class="kpis" id="kpis"></div>
+      <div class="panel">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
+          <h2 style="margin:0">Simulated fund TVPI across 10,000 funds</h2>
+          <div class="legend" id="mixlegend"></div>
+        </div>
+        <div class="mix" id="mixbar"></div>
+        <svg class="chart" id="hist" viewBox="0 0 720 260" role="img" aria-label="Histogram of simulated fund TVPI"></svg>
+        <p class="note" id="histnote"></p>
+      </div>
+      <div class="panel">
+        <h2>Per-check outcome profile of this mix</h2>
+        <svg class="chart" id="bucketchart" viewBox="0 0 720 200" role="img" aria-label="Probability of each outcome bucket for one check"></svg>
+      </div>
+    </section>
+  </div>
+
+  <section class="panel" aria-labelledby="dual-h">
+    <h2 id="dual-h">Dual mandate: sleeves, regimes and the cost of the ED allocation</h2>
+    <div class="optgrid">
+      <div style="display:grid;gap:14px;min-width:0">
+        <div class="scroll"><table id="sleevetable"></table></div>
+        <div class="scroll"><table id="regimetable"></table></div>
+      </div>
+      <div style="display:grid;gap:10px;min-width:0;align-content:start">
+        <div class="callout" id="costbox"></div>
+        <h3>P(fund &lt; 1x) and mean multiple by ED share</h3>
+        <svg class="chart" id="sharechart" viewBox="0 0 460 260" role="img" aria-label="Probability the fund returns less than 1x, by ED share"></svg>
+        <div class="legend"><span><i style="background:var(--bad)"></i>P(fund &lt; 1x)</span><span><i style="background:var(--accent)"></i>mean fund multiple</span><span><i style="background:var(--warn)"></i>current share</span></div>
+        <p class="note">Holds total companies and the VC mix proportions fixed; only the split between sleeves changes. The ED tables are the same at every share, so this shows the assumed trade-off, not evidence about what ED deals can achieve. Indirect returns (jobs, impact) are not counted.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="cap-h">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <h2 id="cap-h" style="margin:0">Capital and ED-share sensitivity (check sizes fixed)</h2>
+      <div style="display:flex;gap:10px;align-items:center"><span class="progress" id="capprog"></span><button class="btn primary" id="runcap">Run sensitivity</button></div>
+    </div>
+    <p class="note">Companies scale with each sleeve's dollars at today's average all-in per company, so check sizes stay the same. VC companies keep the current mix proportions; all other assumptions are the ones set above. 4,000 simulated funds per cell.</p>
+    <div class="terms" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));max-width:900px">
+      <label for="capfunds">Total capital to test ($M, comma-separated)<input id="capfunds" value="7.5, 10, 15, 22.5, 30" style="padding:5px 6px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--fg);font:13px var(--mono)"></label>
+      <label for="capshares">ED shares to test (%, comma-separated)<input id="capshares" value="0, 10, 20, 25, 30, 40, 50" style="padding:5px 6px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--fg);font:13px var(--mono)"></label>
+      <label for="capmetric">Show<select id="capmetric" style="padding:5px 6px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--fg);font:13px var(--body)">
+        <option value="mean">Mean fund multiple</option><option value="median">Median fund multiple</option><option value="p_lt1">P(fund &lt; 1x)</option>
+        <option value="p_target">P(fund ≥ target)</option><option value="proceeds">Expected gross proceeds</option><option value="edcost">Proceeds given up vs 0% ED</option><option value="counts">Companies (VC / ED)</option></select></label>
+    </div>
+    <div class="scroll" style="margin-top:12px"><table id="captable"></table></div>
+    <p class="note" id="capnote2"></p>
+  </section>
+
+  <section class="panel" aria-labelledby="brk-h">
+    <h2 id="brk-h">Returns by stage and type of investment</h2>
+    <div class="optgrid">
+      <div class="scroll"><table id="breakout"></table></div>
+      <div class="callout" id="cfbox"></div>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="opt-h">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <h2 id="opt-h" style="margin:0">Optimizer: four objectives</h2>
+      <div style="display:flex;gap:10px;align-items:center"><span class="progress" id="optprog">Showing results at default assumptions</span><button class="btn primary" id="runopt">Re-run with current assumptions</button></div>
+    </div>
+    <p class="note">Holds the ED sleeve fixed and searches ~1,500 random allocations of the current VC deal count (max 30% in any subvertical), then hill-climbs one deal at a time. All objectives are scored on the whole fund. 1: maximize P(fund TVPI ≥ target). 2: maximize mean fund TVPI. 3: maximize median subject to P(fund &lt; 1x) ≤ the downside cap. 4: the trade-off chart, where each dot is one candidate portfolio.</p>
+    <div class="optgrid">
+      <div class="scroll"><table id="opttable"></table></div>
+      <div>
+        <svg class="chart" id="frontier" viewBox="0 0 460 320" role="img" aria-label="Trade-off between expected fund TVPI and probability of losing money"></svg>
+        <div class="legend" style="margin-top:4px"><span><i style="background:var(--line)"></i>candidates</span><span><i style="background:var(--accent)"></i>optimized</span><span><i style="background:var(--warn)"></i>your mix</span></div>
+      </div>
+    </div>
+    <div class="callout" style="margin-top:14px" id="robust"></div>
+  </section>
+
+  <section class="panel">
+    <details id="assump">
+      <summary>Assumptions: outcome probabilities by subvertical and stage</summary>
+      <p class="note" style="margin-top:10px">Edit any cell (percent). Each row must sum to 100%. The stress sliders apply on top of the table: the loss shift moves probability between the write-off bucket and the 1x+ buckets in proportion; the tail scale multiplies the 20–50x and 50x+ probabilities.</p>
+      <div class="stress" id="stress"></div>
+      <h3 style="margin:6px 0 8px">Economic development sleeve (from Elevate_Dual_Mandate_Outcome_Model.xlsx)</h3>
+      <div class="scroll"><table class="atab" id="edtable"></table></div>
+      <h3 style="margin:16px 0 8px">VC sleeve by subvertical</h3>
+      <div class="scroll"><table class="atab" id="atable"></table></div>
+      <h3 style="margin:16px 0 8px">Industry cycles by subvertical</h3>
+      <p class="note">Each simulated fund draws one shock per subvertical (mean 1), so companies in the same subvertical boom or bust together. Volatility adds risk without changing expected returns; the outlook multiplier changes expected returns directly (1.1 = expected upswing, 0.9 = downswing).</p>
+      <div class="scroll"><table class="atab" id="cyctable"></table></div>
+      <p style="margin-top:10px"><button class="btn" id="resetA">Reset to published defaults</button></p>
+    </details>
+  </section>
+
+  <section class="panel">
+    <h2>Sources and limits</h2>
+    <ul class="src">
+      <li>Elevate_Dual_Mandate_Outcome_Model.xlsx (internal): $14M fund, 25% ED / 75% VC, 9 ED and 27 VC companies, $1M per-company cap, ED and VC Worst/Base/Best tables. The 25/50/25 regime weights are an added assumption.</li>
+      <li><a href="https://sethlevine.com/archives/2014/08/venture-outcomes-are-even-more-skewed-than-you-think.html" target="_blank" rel="noopener">Correlation Ventures via Seth Levine</a>: ~21,000 US financings 2004–2013, 65% returned &lt; 1x, 10% ≥ 5x, 4% ≥ 10x. The all-sector anchor.</li>
+      <li><a href="https://www.forbes.com/sites/brucebooth/2014/08/11/data-insight-the-return-distribution-of-biopharma-vc-financings/" target="_blank" rel="noopener">Bruce Booth (Forbes, 2014)</a>: BioPharma loss rate 57% vs 66% for other sectors; &gt; 5x 11.5% vs 9.8%; 50x+ much rarer in BioPharma.</li>
+      <li><a href="https://lifescivc.com/2016/11/biotech-venture-capital-mythbusting-redux/" target="_blank" rel="noopener">LifeSciVC (2016), Cambridge Associates data</a>: 5x+ deals 15% in biopharma vs 10% in IT/software.</li>
+      <li><a href="https://www.forbes.com/sites/brucebooth/2012/11/07/data-insight-venture-capital-returns-and-loss-rates/" target="_blank" rel="noopener">Adams Street via Booth (2012)</a>: dollar-weighted loss ~55% overall, biotech ~36%, internet ~59%.</li>
+      <li><a href="https://a16z.com/performance-data-and-the-babe-ruth-effect-in-venture-capital/" target="_blank" rel="noopener">Horsley Bridge via a16z</a>: ~6% of deals produced ~60% of returns. <a href="https://www.industryventures.com/insight/winning-by-losing-in-early-stage-investing/" target="_blank" rel="noopener">Industry Ventures</a>: early-stage loss ~65%, median fund MOIC 1.9x.</li>
+      <li><a href="https://energy.mit.edu/publication/venture-capital-cleantech" target="_blank" rel="noopener">MIT Energy Initiative (2016)</a> and <a href="https://www.ctvc.co/exits-analysis-clean-tech-climate-tech" target="_blank" rel="noopener">CTVC</a>: cleantech 2006–11 lost over half of $25B; climate exits take ~9 years.</li>
+      <li><a href="https://www.greenqueen.com.hk/alternative-protein-funding-q4-2025-plant-based-investment/" target="_blank" rel="noopener">GFI via Green Queen</a>: alt-protein funding fell to $881M in 2025 from $6.9B in 2021; 40+ ventures shut, sold or went bankrupt in one year. <a href="https://www.croplife.com/smart-tech/2025-agtech-venture-capital-investment-and-exit-round-up/" target="_blank" rel="noopener">CropLife</a>: 54 agtech exits in 2025, all M&amp;A, no IPOs.</li>
+      <li><a href="https://russfein.substack.com/p/the-quantum-boom-m-and-a-and-fundraising" target="_blank" rel="noopener">Russ Fein</a>: IonQ bought Oxford Ionics for $1.075B. <a href="https://postquantum.com/quantum-commercialization/quantum-spac-wave/" target="_blank" rel="noopener">PostQuantum</a>: the 2021 quantum SPACs delivered ~12 cents per dollar of projected 2025 revenue, and several fell 84–90%+.</li>
+      <li><a href="https://carta.com/data/linkedin-seed-to-series-a-hard-in-every-sector/" target="_blank" rel="noopener">Carta (2025)</a>: seed-to-A graduation down in every sector since 2021; hardware held up best.</li>
+    </ul>
+    <p class="note" style="margin-top:12px">Rows tagged <span class="conf Judgment">Judgment</span> have no published bucket data behind them. Check sizes come from the stage averages and conviction ranges. Each VC company lands in one next-round scenario (up, flat or down round, a Series B Elevate cannot join, or failure) that shifts its outcome odds; Elevate may follow on once in up, flat and down rounds at that round's price, and skipping a round can cost part of the initial stake. There is no entry-valuation or ownership term, conviction changes size but not odds, and correlates deals only through exit-multiple shocks. Fund TVPI = fund gross multiple × invested share, less carry on gains above 1x; at the defaults (100%, 0%) it equals gross, matching Elevate's workbook. Indirect returns such as jobs or impact are not counted. Theoretical model; not investment advice.</p>
+  </section>
+</div>
+
+<script id="engine-src" type="text/plain">
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+var EDMAX=40,NKMAX=32;
+function makeSim(S,n,seed,sg,sv,nv){
+  const r=mulberry32(seed),u=new Float64Array(S*n),v=new Float64Array(S*n),ws=new Float64Array(S*n),wc=new Float64Array(S*n),wf=new Float64Array(S*n),wp=new Float64Array(S*n),fg=new Float64Array(S),fv=new Float64Array(S*nv),zg=new Float64Array(S),ue=new Float64Array(S*EDMAX),zs=new Float64Array(S*NKMAX);
+  const gauss=()=>{let a=r()||1e-12,b=r();return Math.sqrt(-2*Math.log(a))*Math.cos(2*Math.PI*b)};
+  for(let i=0;i<S*n;i++){u[i]=r();v[i]=r();ws[i]=r();wc[i]=r();wf[i]=r();wp[i]=r()}
+  for(let s=0;s<S;s++){const z=gauss();zg[s]=z;fg[s]=Math.exp(sg*z-sg*sg/2);for(let k=0;k<nv;k++)fv[s*nv+k]=Math.exp(sv*gauss()-sv*sv/2)}
+  for(let i=0;i<S*EDMAX;i++)ue[i]=r();
+  for(let i=0;i<S*NKMAX;i++)zs[i]=gauss();
+  return {S,n,u,v,fg,fv,nv,zg,ue,ws,wc,wf,wp,zs};
+}
+function ninv(p){const a=[-39.69683028665376,220.9460984245205,-275.9285104469687,138.357751867269,-30.66479806614716,2.506628277459239],b=[-54.47609879822406,161.5858368580409,-155.6989798598866,66.80131188771972,-13.28068155211828],c=[-.007784894002430293,-.3223964580411365,-2.400758277161838,-2.549732539343734,4.374664141464968,2.938163982698783],d=[.007784695709041462,.3224671290700398,2.445134137142996,3.754408661907416];
+  p=Math.min(Math.max(p,1e-9),1-1e-9);const pl=.02425;let q,r;
+  if(p<pl){q=Math.sqrt(-2*Math.log(p));return(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5])/((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1)}
+  if(p>1-pl){q=Math.sqrt(-2*Math.log(1-p));return-(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5])/((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1)}
+  q=p-.5;r=q*q;return(((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q/(((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1)}
+// ed: {share,n,mults[6],cum[3][6],zw,zb}
+function regimeOf(z,ed){return z<ed.zw?0:(z>ed.zb?2:1)}
+function edRun(sim,ed){const {S,zg,ue}=sim,out=new Float64Array(S);if(!ed||!ed.n)return out;
+  for(let s=0;s<S;s++){const c=ed.cum[regimeOf(zg[s],ed)];let t=0;for(let j=0;j<ed.n;j++){const x=ue[s*EDMAX+j];let b=0;while(b<5&&x>=c[b])b++;t+=ed.mults[b]}out[s]=t/ed.n}
+  return out}
+function fundRun(sim,counts,M,lo,hi,vidx,ed,edArr,cash){const F=M.F,sh=(ed&&ed.n)?ed.share:0,bud=F*(1-sh);
+  const {pr,dep}=cash||vcCash(sim,counts,M,lo,hi,vidx),e=sh?(edArr||edRun(sim,ed)):null,o=new Float64Array(sim.S);
+  for(let s=0;s<sim.S;s++)o[s]=((sh?sh*F*e[s]:0)+pr[s]+Math.max(0,bud-dep[s]))/(F+Math.max(0,dep[s]-bud));return o}
+// M: {s,a: per-sub cumulative probs by stage; seed: seed share; sz: sizing; F: fund size}
+var RT=["Up","Flat","Down","GradB"],FT=["Up","Flat","Down"],STG=["Seed","Series A"];
+function scenRows(p,R,stage,fw){const L=p[0]+p[1],T=p[5]+p[6]+p[7],U=1-L,Mm=p[2]+p[3]+p[4],tau=U>0?T/U:0;
+  const pr=RT.map(t=>R[t].prob[stage]),pf=1-pr.reduce((a,b)=>a+b,0),sh=RT.map(t=>R[t].loss_shift),mu_=RT.map(t=>R[t].tail_mult),sig=RT.map(t=>R[t].signal?1:0);
+  let PS=0,PC=0,SL=0;RT.forEach((t,i)=>{if(sig[i]){PS+=pr[i];SL+=pr[i]*(L+sh[i])}else PC+=pr[i]});
+  const delta=PS>0?(L*(1-PC)-pf-SL)/PS:0;let clip=false;
+  const Lr=sh.map((x,i)=>L+x+(sig[i]?delta:0)),Lt=Lr.map(x=>Math.min(1,Math.max(0,x)));
+  RT.forEach((t,i)=>{if(sig[i]&&pr[i]>0&&(Lr[i]<-1e-9||Lr[i]>1+1e-9))clip=true});
+  let den=0;RT.forEach((t,i)=>{if(sig[i])den+=pr[i]*(1-Lt[i])*mu_[i]});den*=tau;
+  const mu=(PS>0&&den>0)?T*(1-PC)/den:1;
+  const sgr=mu_.map((m,i)=>tau*m*(sig[i]?mu:1));RT.forEach((t,i)=>{if(sig[i]&&pr[i]>0&&sgr[i]>1+1e-9)clip=true});
+  const rows=RT.map((t,i)=>{const sg=Math.min(1,sgr[i]),Ut=1-Lt[i],r=new Array(8).fill(0);
+    if(L>0){r[0]=Lt[i]*p[0]/L;r[1]=Lt[i]*p[1]/L}else r[0]=Lt[i];
+    for(let j=2;j<5;j++)r[j]=Mm>0?Ut*(1-sg)*p[j]/Mm:(j===2?Ut*(1-sg):0);
+    for(let j=5;j<8;j++)r[j]=T>0?Ut*sg*p[j]/T:(j===5?Ut*sg:0);return r});
+  rows.push([fw,1-fw,0,0,0,0,0,0]);return {rows,clip}}
+function cumRow(r){let t=0;const c=r.map(x=>t+=x);c[7]=1;return c}
+function buildCum(ps,pa,R,fw){let clip=false;const cum=ps.map((_,k)=>[ps[k],pa[k]].map((b,si)=>{const o=scenRows(b,R,STG[si],fw);clip=clip||o.clip;return o.rows.map(cumRow)}));return {cum,clip}}
+function vcCash(sim,counts,M,lo,hi,vidx){
+  const {S,n,u,v,fg,fv,nv,ws,wc,wf,wp,zs}=sim,pr=new Float64Array(S),dep=new Float64Array(S);let N=0;for(const c of counts)N+=c;
+  if(N===0||N>n)return {pr,dep};
+  const sz=M.sz,sd=sz.stages.Seed,sa=sz.stages["Series A"],hs=d=>d.high>d.low?Math.min(1,Math.max(0,(d.avg-d.low)/(d.high-d.low))):0;
+  const hS=hs(sd),hA=hs(sa),cap=sz.capability??1,flo=h=>h<1?Math.max(0,(1-h*cap)/(1-h)):1,fS=flo(hS),fA=flo(hA),sc=sz.scale,R=sz.rounds,pcS=[],pcA=[];let aS=0,aA=0;RT.forEach(t=>{aS+=R[t].prob.Seed;pcS.push(aS);aA+=R[t].prob["Series A"];pcA.push(aA)});
+  const part=FT.map(t=>R[t].participate),fsz=FT.map(t=>R[t].size),pri=FT.map(t=>R[t].price),skp=FT.map(t=>R[t].skip_penalty||0),col=M.collect,trk=M.track,B=sz.seriesB,BF=sz.seriesB_follow;
+  const slotSub=new Int32Array(N);let p=0;for(let k=0;k<counts.length;k++)for(let j=0;j<counts[k];j++)slotSub[p++]=k;
+  const ratio=hi.map((h,i)=>lo[i]>0?h/lo[i]:0);
+  for(let s=0;s<S;s++){const base=s*n,g=fg[s];let P=0,Dp=0,hg=0;
+    for(let j=0;j<N;j++){const k=slotSub[j],i=base+j,isS=ws[i]<M.seed,y=wf[i],pc=isS?pcS:pcA;let t=0;while(t<4&&y>=pc[t])t++;const c=M.cum[k][isS?0:1][t],hiC=wc[i]<(isS?hS:hA),f=hiC?cap:(isS?fS:fA),Lr=c[1],Lp=1-Math.min(1,f*(1-Lr)),u0=u[i];
+      const x=u0<Lp?(Lp>0?u0*Lr/Lp:0):(Lp<1?Lr+(u0-Lp)*(1-Lr)/(1-Lp):Lr);let b=0;while(b<7&&x>=c[b])b++;
+      const cs=M.csig?M.csig[k]:0,ct=M.ctilt?M.ctilt[k]:1,mult=lo[b]>0?lo[b]*Math.pow(ratio[b],v[i])*g*fv[s*nv+vidx[k]]*ct*Math.exp(cs*zs[s*NKMAX+k]-cs*cs/2):0;
+      const capC=M.capCo||1e6,d=isS?sd:sa,chk=Math.min(capC,sc*(hiC?d.high:d.low)),room=Math.max(0,capC-chk),join=t<3&&wp[i]<part[t],bJ=t===3&&!isS&&hiC&&BF&&BF.enabled&&wp[i]<BF.participate,fo=Math.min(room,join?fsz[t]*chk:(bJ?BF.fill*room:0)),keep=(t>=3||join)?1:1-skp[t];
+      const price=t===0?d.stepup:(t<3?pri[t]:(t===3?B.price:1)),pI=mult*keep*chk,pF=fo?mult*fo/price:0;P+=pI+pF;Dp+=chk+fo;
+      if(col){const a=col[t];a.n++;a.m+=mult;if(mult<1)a.l++;a.fo+=fo;if(fo)a.j++}
+      if(trk){const z=trk[isS?0:1];z.ii+=chk;z.pi+=pI;z.if+=fo;z.pf+=pF;
+        if(t===3&&!isS&&!fo&&wp[i]<B.participate){const hd=B.size*chk;trk.bd+=hd;hg+=hd*(mult/B.price-1);trk.bn++}}}
+    pr[s]=P;dep[s]=Dp;if(trk)trk.hg.push(hg)}
+  return {pr,dep};
+}
+function grossRun(sim,counts,M,lo,hi,vidx){const {pr,dep}=vcCash(sim,counts,M,lo,hi,vidx),o=new Float64Array(sim.S);for(let s=0;s<sim.S;s++)o[s]=dep[s]>0?pr[s]/dep[s]:0;return o}
+function netOf(gross,inv,carry){const o=new Float64Array(gross.length);for(let i=0;i<gross.length;i++){const p=gross[i]*inv;o[i]=p-carry*Math.max(0,p-1)}return o}
+function summarize(nt,target){const a=Array.from(nt).sort((x,y)=>x-y),S=a.length;let m=0,l1=0,g2=0,g3=0,gt=0;
+  for(const x of a){m+=x;if(x<1)l1++;if(x>=2)g2++;if(x>=3)g3++;if(x>=target)gt++}
+  const q=f=>a[Math.min(S-1,Math.floor(f*S))];
+  return {mean:m/S,median:q(.5),p10:q(.1),p90:q(.9),p_lt1:l1/S,p_ge2:g2/S,p_ge3:g3/S,p_target:gt/S}}
+function allocate(w,n){const s=w.reduce((a,b)=>a+b,0),raw=w.map(x=>x/s*n),c=raw.map(Math.floor);let rem=n-c.reduce((a,b)=>a+b,0);
+  const ord=raw.map((x,i)=>[x-c[i],i]).sort((a,b)=>b[0]-a[0]);for(let i=0;i<rem;i++)c[ord[i][1]]++;return c}
+function dirichlet(r,K,alpha){const g=[];for(let i=0;i<K;i++){let x=0;const m=Math.max(1,Math.round(alpha*4));for(let j=0;j<m;j++)x-=Math.log(r()||1e-12);g.push(Math.pow(x/m,1/alpha)*(0.3+r()))}const s=g.reduce((a,b)=>a+b,0);return g.map(x=>x/s)}
+function optimize(P,post){
+  const {n,K,cum,lo,hi,vidx,inv,carry,target,lossCap,cap,sg,sv,nv}=P,r=mulberry32(11),maxc=Math.floor(cap*n+1e-9);
+  const s1=makeSim(2000,n,1,sg,sv,nv),sL=makeSim(3000,n,3,sg,sv,nv),s2=makeSim(10000,n,2,sg,sv,nv);
+  const ed=P.ed,E=new Map([[s1,edRun(s1,ed)],[sL,edRun(sL,ed)],[s2,edRun(s2,ed)]]);
+  const ev=(sim,c)=>summarize(netOf(fundRun(sim,c,cum,lo,hi,vidx,ed,E.get(sim)),inv,carry),target);
+  const seen=new Set(),rows=[];const M=1500;
+  for(let i=0;i<M;i++){const a=[0.3,0.7,1.5][i%3];let w=dirichlet(r,K,a);let c=allocate(w,n);
+    for(let it=0;it<40&&Math.max(...c)>maxc;it++){const k=c.indexOf(Math.max(...c));c[k]--;let j;do{j=Math.floor(r()*K)}while(c[j]>=maxc||j===k);c[j]++}
+    const key=c.join(',');if(seen.has(key))continue;seen.add(key);rows.push({c,s:ev(s1,c)});
+    if(i%150===0)post({type:'progress',msg:`Screening candidates ${i}/${M}`});}
+  const objs={success:{score:s=>s.p_target,feas:()=>true},mean:{score:s=>s.mean,feas:()=>true},downside:{score:s=>s.median,feas:s=>s.p_lt1<=lossCap}};
+  const res={};
+  for(const [key,o] of Object.entries(objs)){
+    const val=s=>o.feas(s)?o.score(s):-1e9-s.p_lt1;
+    let f=rows.slice().sort((a,b)=>val(b.s)-val(a.s)).slice(0,8);
+    let best=f.map(x=>({c:x.c,s:ev(sL,x.c)})).sort((a,b)=>val(b.s)-val(a.s))[0];
+    let c=best.c.slice(),cur=best.s;
+    for(let it=0;it<14;it++){post({type:'progress',msg:`Refining ${key} (step ${it+1})`});let bv=val(cur),bc=null,bs=null;
+      for(let i=0;i<K;i++){if(!c[i])continue;for(let j=0;j<K;j++){if(i===j||c[j]>=maxc)continue;const t=c.slice();t[i]--;t[j]++;const st=ev(sL,t);if(val(st)>bv+1e-6){bv=val(st);bc=t;bs=st}}}
+      if(!bc)break;c=bc;cur=bs;}
+    res[key]={counts:c,stats:ev(s2,c)};}
+  const eq=allocate(new Array(K).fill(1),n);res.equal={counts:eq,stats:ev(s2,eq)};
+  const cloud=rows.map(x=>[x.s.p_lt1,x.s.mean]);
+  return {res,cloud};
+}
+</script>
+
+<script>
+const D={"buckets":["0x (write-off)","0.1-1x","1-3x","3-5x","5-10x","10-20x","20-50x","50x+"],"bounds":[[0.0,0.0],[0.1,1.0],[1.0,3.0],[3.0,5.0],[5.0,10.0],[10.0,20.0],[20.0,50.0],[50.0,250.0]],"verticals":["Life Sciences","Software","Hard Tech"],"defaults":{"n_deals":30,"seed_share":0.8,"invested_frac":1.0,"carry":0.0,"target":2.0,"loss_cap":0.4,"sigma_global":0.25,"sigma_vertical":0.1,"max_weight":0.3},"subs":[{"name":"Therapeutics","vert":"Life Sciences","seed":[0.462462,0.198198,0.144145,0.072072,0.063063,0.042042,0.014014,0.004004],"a":[0.358641,0.212787,0.212788,0.088911,0.070929,0.038961,0.013986,0.002997],"hold":7,"conf":"Elevate (Midwest)","why":"Elevate Midwest/Indiana projected outcome distribution (provided 2026-11-11). Displayed percentages were rounded to 0.1% and rescaled to sum to exactly 100%."},{"name":"Medical Devices & Diagnostics","vert":"Life Sciences","seed":[0.449,0.237,0.164,0.073,0.05,0.022,0.004,0.001],"a":[0.310689,0.263736,0.244756,0.093906,0.056943,0.023976,0.004995,0.000999],"hold":8,"conf":"Elevate (Midwest)","why":"Elevate Midwest/Indiana projected outcome distribution (provided 2026-11-11). Displayed percentages were rounded to 0.1% and rescaled to sum to exactly 100%."},{"name":"Digital Health","vert":"Life Sciences","seed":[0.535536,0.219219,0.114114,0.053053,0.039039,0.025025,0.01001,0.004004],"a":[0.354,0.279,0.193,0.077,0.053,0.027,0.011,0.006],"hold":6,"conf":"Elevate (Midwest)","why":"Elevate Midwest/Indiana projected outcome distribution (provided 2026-11-11). Displayed percentages were rounded to 0.1% and rescaled to sum to exactly 100%."},{"name":"Agtech","vert":"Life Sciences","seed":[0.488,0.263,0.132,0.056,0.033,0.017,0.008,0.003],"a":[0.351,0.305,0.2,0.076,0.043,0.017,0.006,0.002],"hold":9,"conf":"Elevate (Midwest)","why":"Elevate Midwest/Indiana projected outcome distribution (provided 2026-11-11). Displayed percentages were rounded to 0.1% and rescaled to sum to exactly 100%."},{"name":"Enterprise SaaS","vert":"Software","seed":[0.467467,0.241241,0.145146,0.058058,0.043043,0.025025,0.012012,0.008008],"a":[0.279,0.292,0.24,0.083,0.063,0.028,0.011,0.004],"hold":7,"conf":"Elevate (Midwest)","why":"Elevate Midwest/Indiana projected outcome distribution (provided 2026-11-11). Displayed percentages were rounded to 0.1% and rescaled to sum to exactly 100%."},{"name":"Cybersecurity","vert":"Software","seed":[0.412587,0.25974,0.155845,0.061938,0.046953,0.034965,0.016983,0.010989],"a":[0.241,0.302,0.248,0.086,0.065,0.037,0.015,0.006],"hold":6,"conf":"Elevate (Midwest)","why":"Elevate Midwest/Indiana projected outcome distribution (provided 2026-11-11). Displayed percentages were rounded to 0.1% and rescaled to sum to exactly 100%."},{"name":"AI & Infrastructure","vert":"Software","seed":[0.533,0.208,0.113,0.057,0.045,0.025,0.012,0.007],"a":[0.308,0.278,0.213,0.085,0.064,0.03,0.014,0.008],"hold":6,"conf":"Elevate (Midwest)","why":"Elevate Midwest/Indiana projected outcome distribution (provided 2026-11-11). Displayed percentages were rounded to 0.1% and rescaled to sum to exactly 100%."},{"name":"Fintech","vert":"Software","seed":[0.486,0.23,0.134,0.057,0.046,0.024,0.013,0.01],"a":[0.264,0.293,0.238,0.087,0.065,0.03,0.015,0.008],"hold":7,"conf":"Elevate (Midwest)","why":"Elevate Midwest/Indiana projected outcome distribution (provided 2026-11-11). Displayed percentages were rounded to 0.1% and rescaled to sum to exactly 100%."},{"name":"Consumer & Marketplace","vert":"Software","seed":[0.56,0.212,0.101,0.046,0.039,0.021,0.011,0.01],"a":[0.33,0.287,0.202,0.075,0.058,0.027,0.014,0.007],"hold":6,"conf":"Elevate (Midwest)","why":"Elevate Midwest/Indiana projected outcome distribution (provided 2026-11-11). Displayed percentages were rounded to 0.1% and rescaled to sum to exactly 100%. Series A 3-5x (7.5%) inferred from the 100% row total; the cell was hidden in the screenshot."},{"name":"Climate & Energy Hardware","vert":"Hard Tech","seed":[0.545,0.219,0.11,0.045,0.032,0.028,0.014,0.007],"a":[0.358358,0.31031,0.175176,0.072072,0.043043,0.026026,0.012012,0.003003],"hold":9,"conf":"Elevate (Midwest)","why":"Elevate Midwest/Indiana projected outcome distribution (provided 2026-11-11). Displayed percentages were rounded to 0.1% and rescaled to sum to exactly 100%. Seed 3-5x (4.5%) inferred from the 100% row total; the cell was partly hidden in the screenshot."},{"name":"Robotics & Adv. Manufacturing","vert":"Hard Tech","seed":[0.521522,0.224224,0.125125,0.049049,0.036036,0.028028,0.011011,0.005005],"a":[0.32032,0.298298,0.20921,0.077077,0.051051,0.028028,0.012012,0.004004],"hold":8,"conf":"Elevate (Midwest)","why":"Elevate Midwest/Indiana projected outcome distribution (provided 2026-11-11). Displayed percentages were rounded to 0.1% and rescaled to sum to exactly 100%."},{"name":"Semis & Hardware","vert":"Hard Tech","seed":[0.535928,0.193613,0.114771,0.048902,0.03992,0.035928,0.018962,0.011976],"a":[0.346346,0.276276,0.194195,0.077077,0.055055,0.031031,0.014014,0.006006],"hold":9,"conf":"Elevate (Midwest)","why":"Elevate Midwest/Indiana projected outcome distribution (provided 2026-11-11). Displayed percentages were rounded to 0.1% and rescaled to sum to exactly 100%."},{"name":"Aerospace & Defense","vert":"Hard Tech","seed":[0.533467,0.207792,0.116883,0.04995,0.037962,0.02997,0.014985,0.008991],"a":[0.332332,0.288288,0.206207,0.077077,0.051051,0.028028,0.012012,0.005005],"hold":8,"conf":"Elevate (Midwest)","why":"Elevate Midwest/Indiana projected outcome distribution (provided 2026-11-11). Displayed percentages were rounded to 0.1% and rescaled to sum to exactly 100%."},{"name":"Quantum","vert":"Hard Tech","seed":[0.551552,0.188188,0.107107,0.045045,0.04004,0.035035,0.021021,0.012012],"a":[0.351648,0.267732,0.185815,0.082917,0.056943,0.034965,0.015984,0.003996],"hold":9,"conf":"Elevate (Midwest)","why":"Elevate Midwest/Indiana projected outcome distribution (provided 2026-11-11). Displayed percentages were rounded to 0.1% and rescaled to sum to exactly 100%. Marked with an asterisk in Elevate's table (note not provided)."}],"cycle":[{"sigma":0.6,"outlook":1.0},{"sigma":0.4,"outlook":1.0},{"sigma":0.55,"outlook":1.0},{"sigma":0.5,"outlook":1.0},{"sigma":0.6,"outlook":1.0},{"sigma":0.6,"outlook":1.0},{"sigma":0.8,"outlook":1.0},{"sigma":0.6,"outlook":1.0},{"sigma":0.45,"outlook":1.0},{"sigma":0.55,"outlook":1.0},{"sigma":0.65,"outlook":1.0},{"sigma":0.5,"outlook":1.0},{"sigma":0.35,"outlook":1.0},{"sigma":0.8,"outlook":1.0}],"presets":{"equal":{"label":"Benchmark: equal across all subverticals","counts":[3,3,2,2,2,2,2,2,2,2,2,2,2,2],"stats":{"mean":1.6585494224593156,"median":1.112401927791183,"p10":0.48099892033961117,"p90":3.1587695890986045,"p_lt1":0.44275,"p_ge2":0.2238,"p_ge3":0.11005,"p_target":0.2238}},"success":{"label":"Max P(net TVPI >= 2.0x)","counts":[2,0,0,0,0,9,0,6,0,0,0,8,0,5],"stats":{"mean":1.9991372240588543,"median":1.290533034253443,"p10":0.5170679130026536,"p90":4.097451536116792,"p_lt1":0.3706,"p_ge2":0.2998,"p_ge3":0.16685,"p_target":0.2998}},"mean":{"label":"Max expected net TVPI","counts":[1,0,0,0,0,9,0,7,0,0,0,9,0,4],"stats":{"mean":2.003209160057557,"median":1.2883838486745007,"p10":0.5145074378082797,"p90":4.1008577439966825,"p_lt1":0.3724,"p_ge2":0.30015,"p_ge3":0.16875,"p_target":0.30015}},"downside":{"label":"Max median s.t. P(<1x) <= 40%","counts":[9,0,0,0,0,9,0,3,0,0,0,6,0,3],"stats":{"mean":1.9542791428135156,"median":1.2883466646406805,"p10":0.5320152891526153,"p90":3.885304920917989,"p_lt1":0.36235,"p_ge2":0.2919,"p_ge3":0.15875,"p_target":0.2919}},"current":{"label":"Elevate's current mix","counts":[2,1,1,1,3,4,3,3,1,1,2,3,2,3],"stats":{"mean":1.7894554399171443,"median":1.1630539730811107,"p10":0.4951935547484214,"p90":3.548690870092275,"p_lt1":0.4192,"p_ge2":0.2509,"p_ge3":0.13255,"p_target":0.2509}}},"cloud":[[0.4693,1.657],[0.4777,1.605],[0.4237,1.815],[0.408,1.902],[0.4567,1.743],[0.435,1.709],[0.3843,1.943],[0.462,1.712],[0.4673,1.635],[0.4693,1.665],[0.433,1.723],[0.4457,1.787],[0.4593,1.701],[0.464,1.662],[0.448,1.668],[0.426,1.775],[0.4273,1.788],[0.45,1.697],[0.4033,1.88],[0.4317,1.714],[0.4573,1.668],[0.4393,1.707],[0.436,1.718],[0.45,1.661],[0.4683,1.702],[0.4383,1.701],[0.4543,1.692],[0.4343,1.743],[0.423,1.8],[0.398,1.843],[0.42,1.744],[0.4323,1.71],[0.4247,1.813],[0.4883,1.543],[0.4373,1.792],[0.4137,1.78],[0.4993,1.559],[0.4703,1.699],[0.4433,1.652],[0.408,1.873],[0.453,1.723],[0.4277,1.763],[0.5073,1.446],[0.4197,1.782],[0.4753,1.603],[0.461,1.701],[0.405,1.84],[0.432,1.77],[0.4573,1.633],[0.4737,1.586],[0.4353,1.733],[0.4257,1.788],[0.423,1.779],[0.4123,1.826],[0.465,1.692],[0.472,1.654],[0.4363,1.739],[0.4437,1.666],[0.451,1.643],[0.4633,1.68],[0.48,1.633],[0.425,1.788],[0.4383,1.777],[0.481,1.57],[0.453,1.687],[0.4403,1.72],[0.464,1.647],[0.4237,1.823],[0.46,1.594],[0.4447,1.675],[0.4633,1.685],[0.4227,1.789],[0.4047,1.821],[0.4277,1.847],[0.4343,1.792],[0.471,1.534],[0.454,1.678],[0.4383,1.725],[0.408,1.813],[0.4617,1.708],[0.4167,1.793],[0.4583,1.71],[0.47,1.651],[0.4443,1.746],[0.42,1.83],[0.4347,1.73],[0.4237,1.833],[0.4703,1.606],[0.4873,1.511],[0.4287,1.805],[0.513,1.478],[0.4057,1.885],[0.4327,1.746],[0.4767,1.619],[0.5177,1.476],[0.4367,1.785],[0.4213,1.763],[0.4107,1.794],[0.422,1.772],[0.494,1.481],[0.4317,1.774],[0.457,1.669],[0.4947,1.514],[0.4393,1.695],[0.464,1.626],[0.514,1.504],[0.4467,1.715],[0.455,1.714],[0.47,1.685],[0.4797,1.586],[0.4447,1.724],[0.48,1.643],[0.4433,1.701],[0.4603,1.683],[0.4607,1.729],[0.4147,1.795],[0.443,1.76],[0.4283,1.768],[0.4633,1.667],[0.42,1.836],[0.4933,1.576],[0.4137,1.817],[0.4317,1.751],[0.452,1.721],[0.44,1.772],[0.4443,1.728],[0.4597,1.699],[0.42,1.814],[0.4483,1.702],[0.4637,1.633],[0.441,1.73],[0.447,1.714],[0.4357,1.84],[0.411,1.846],[0.4447,1.765],[0.4317,1.787],[0.437,1.743],[0.422,1.78],[0.4653,1.728],[0.4763,1.616],[0.4637,1.694],[0.453,1.595],[0.439,1.721],[0.4323,1.755],[0.3867,1.909],[0.402,1.837],[0.4183,1.819],[0.444,1.608],[0.41,1.824],[0.3927,1.863],[0.418,1.846],[0.3923,1.877],[0.44,1.765],[0.425,1.878],[0.4377,1.762],[0.4637,1.738],[0.3883,1.926],[0.4317,1.764],[0.4373,1.655],[0.4223,1.738],[0.4173,1.815],[0.457,1.629],[0.458,1.696],[0.4507,1.707],[0.4463,1.71],[0.4597,1.769],[0.4663,1.625],[0.454,1.621],[0.4273,1.825],[0.4093,1.808],[0.4217,1.86],[0.4993,1.488],[0.4357,1.779],[0.44,1.768],[0.4677,1.767],[0.425,1.762],[0.4557,1.694],[0.4197,1.766],[0.4387,1.789],[0.4483,1.662],[0.4487,1.689],[0.4533,1.706],[0.4413,1.806],[0.4273,1.832],[0.4273,1.728],[0.44,1.72],[0.4207,1.826],[0.4437,1.774],[0.4303,1.733],[0.4547,1.72],[0.4603,1.71],[0.45,1.698],[0.4127,1.945],[0.441,1.762],[0.4267,1.854],[0.444,1.687],[0.4233,1.767],[0.436,1.692],[0.474,1.598],[0.399,1.907],[0.4623,1.7],[0.489,1.619],[0.4393,1.764],[0.4203,1.779],[0.5403,1.418],[0.423,1.776],[0.4377,1.748],[0.4413,1.749],[0.4203,1.805],[0.4407,1.693],[0.471,1.587],[0.4043,1.82],[0.4317,1.768],[0.4793,1.6],[0.4507,1.621],[0.444,1.712],[0.4377,1.783],[0.4323,1.765],[0.4447,1.724],[0.4527,1.785],[0.473,1.645],[0.474,1.631],[0.449,1.746],[0.474,1.644],[0.441,1.745],[0.5087,1.572],[0.4257,1.755],[0.4613,1.698],[0.4643,1.601],[0.4073,1.868],[0.4507,1.696],[0.4043,1.855],[0.4413,1.747],[0.4017,1.885],[0.4837,1.518],[0.418,1.846],[0.4477,1.748],[0.4187,1.792],[0.4417,1.762],[0.45,1.706],[0.444,1.749],[0.4873,1.57],[0.4603,1.666],[0.436,1.843],[0.4087,1.819],[0.4223,1.836],[0.449,1.714],[0.456,1.725],[0.4343,1.772],[0.4477,1.744],[0.4137,1.8],[0.4397,1.74],[0.4473,1.771],[0.4503,1.704],[0.4697,1.56],[0.517,1.532],[0.4617,1.705],[0.429,1.763],[0.4407,1.836],[0.3873,1.982],[0.4483,1.732],[0.4997,1.444],[0.4477,1.734],[0.4437,1.768],[0.47,1.655],[0.4387,1.725],[0.455,1.717],[0.461,1.774],[0.4447,1.634],[0.445,1.753],[0.4187,1.846],[0.447,1.637],[0.456,1.68],[0.447,1.828],[0.4287,1.766],[0.4433,1.739],[0.4447,1.793],[0.4503,1.701],[0.4457,1.724],[0.4497,1.72],[0.545,1.424],[0.4553,1.8],[0.4153,1.779],[0.43,1.773],[0.454,1.614],[0.4613,1.691],[0.4433,1.741],[0.4383,1.732],[0.4747,1.593],[0.4627,1.715],[0.4673,1.606],[0.475,1.642],[0.443,1.676],[0.4293,1.807],[0.4427,1.766],[0.4717,1.578],[0.4603,1.627],[0.4687,1.653],[0.4847,1.627],[0.4547,1.711],[0.44,1.757],[0.4173,1.785],[0.4113,1.798],[0.4813,1.557],[0.4597,1.695],[0.4353,1.756],[0.4957,1.62],[0.4383,1.686],[0.443,1.751],[0.4447,1.681],[0.435,1.764],[0.4387,1.726],[0.493,1.624],[0.404,1.894],[0.4257,1.764],[0.4657,1.635],[0.4103,1.822],[0.4367,1.762],[0.422,1.785],[0.4443,1.769],[0.4147,1.764],[0.4453,1.826],[0.4083,1.833],[0.4783,1.596],[0.434,1.757],[0.425,1.821],[0.4193,1.808],[0.4357,1.747],[0.4527,1.744],[0.4067,1.832],[0.47,1.59],[0.448,1.664],[0.4317,1.705],[0.418,1.842],[0.4587,1.77],[0.4397,1.71],[0.464,1.778],[0.44,1.699],[0.4153,1.797],[0.4133,1.87],[0.4473,1.754],[0.414,1.822],[0.4277,1.749],[0.4583,1.711],[0.4357,1.724],[0.4497,1.73],[0.4097,1.806],[0.4667,1.611],[0.466,1.697],[0.4457,1.688],[0.4473,1.691],[0.4493,1.723],[0.408,1.875],[0.457,1.698],[0.425,1.838],[0.4467,1.763],[0.4367,1.716],[0.4333,1.787],[0.45,1.666],[0.4453,1.809],[0.4297,1.777],[0.42,1.866],[0.4637,1.707],[0.4197,1.792],[0.44,1.725],[0.431,1.776],[0.438,1.736],[0.4213,1.742],[0.445,1.752],[0.4713,1.707],[0.4527,1.622],[0.4503,1.729],[0.4637,1.695],[0.423,1.867],[0.4253,1.811],[0.4867,1.565],[0.4447,1.671],[0.4373,1.728],[0.4413,1.87],[0.4397,1.76],[0.4427,1.726],[0.456,1.7],[0.4323,1.733],[0.414,1.797],[0.4637,1.673],[0.4173,1.779],[0.443,1.801],[0.4317,1.775],[0.4393,1.749],[0.4557,1.692],[0.477,1.633],[0.4433,1.636],[0.4427,1.718],[0.391,1.883],[0.4483,1.713],[0.4677,1.67],[0.5083,1.569],[0.464,1.679],[0.431,1.782],[0.415,1.77],[0.4307,1.77],[0.4437,1.787],[0.4493,1.668],[0.461,1.645],[0.44,1.727],[0.422,1.895],[0.446,1.763],[0.4467,1.715],[0.4623,1.731],[0.4607,1.694],[0.432,1.8],[0.4437,1.624],[0.4177,1.847],[0.4467,1.7],[0.3823,1.868],[0.4743,1.645],[0.434,1.785],[0.4747,1.63],[0.456,1.666],[0.4313,1.767],[0.391,1.939],[0.4573,1.757],[0.4143,1.785],[0.395,1.891],[0.4427,1.723],[0.4527,1.64],[0.4293,1.722],[0.4533,1.684],[0.4213,1.828],[0.418,1.831],[0.447,1.725],[0.4507,1.724],[0.3903,1.853],[0.4637,1.583],[0.457,1.638],[0.4093,1.913],[0.4723,1.641],[0.452,1.7],[0.4483,1.703],[0.466,1.671],[0.4477,1.75],[0.4583,1.675],[0.4157,1.809],[0.4203,1.857],[0.4453,1.743],[0.423,1.817],[0.4503,1.707],[0.5097,1.484],[0.4947,1.594],[0.437,1.753],[0.466,1.682],[0.4303,1.785],[0.456,1.694],[0.488,1.536],[0.4377,1.798],[0.4327,1.773],[0.461,1.666],[0.43,1.803],[0.4357,1.827],[0.5167,1.495],[0.4127,1.889],[0.4603,1.744],[0.5037,1.482],[0.4513,1.636],[0.4127,1.81],[0.449,1.665],[0.4347,1.8],[0.3997,1.881],[0.4057,1.832],[0.4537,1.728],[0.4457,1.709],[0.4907,1.548],[0.4273,1.764],[0.4023,1.874],[0.3983,1.899],[0.427,1.789],[0.4407,1.692],[0.4417,1.834],[0.447,1.799],[0.4483,1.723],[0.4147,1.889],[0.4373,1.777],[0.4463,1.731],[0.4493,1.714],[0.3953,1.862],[0.444,1.762],[0.399,1.967],[0.4463,1.783],[0.442,1.684],[0.4387,1.757],[0.4223,1.781],[0.4733,1.666],[0.4397,1.798],[0.4393,1.725],[0.4663,1.722],[0.42,1.678],[0.4813,1.584],[0.4667,1.647],[0.454,1.772],[0.4027,1.865],[0.4333,1.756],[0.423,1.914],[0.4823,1.658],[0.4403,1.734],[0.4563,1.609],[0.429,1.8],[0.4283,1.828],[0.427,1.879],[0.441,1.724],[0.452,1.734],[0.446,1.755],[0.4297,1.794],[0.4357,1.75],[0.4667,1.721],[0.4553,1.723],[0.4733,1.578],[0.4617,1.618],[0.464,1.756],[0.4337,1.748],[0.424,1.801],[0.4583,1.635],[0.4453,1.699],[0.417,1.815],[0.4763,1.634],[0.4447,1.729],[0.443,1.862],[0.4303,1.82],[0.4177,1.768],[0.4337,1.71],[0.4237,1.815],[0.4627,1.703],[0.4063,1.847],[0.45,1.705],[0.428,1.758],[0.4713,1.652],[0.41,1.826],[0.442,1.712],[0.4037,1.86],[0.4763,1.739],[0.415,1.823],[0.3967,1.901],[0.4523,1.669],[0.4263,1.79],[0.4253,1.883],[0.4597,1.65],[0.4373,1.799],[0.448,1.734],[0.423,1.767],[0.4337,1.723],[0.3973,1.9],[0.4393,1.8],[0.4413,1.729],[0.401,1.989],[0.4317,1.744],[0.416,1.755],[0.47,1.688],[0.4633,1.708],[0.4843,1.619],[0.479,1.597],[0.3937,1.904],[0.441,1.706],[0.427,1.857],[0.4677,1.718],[0.4287,1.67],[0.4307,1.823],[0.4177,1.797],[0.4613,1.66],[0.3923,1.907],[0.46,1.669],[0.4147,1.805],[0.4687,1.708],[0.4323,1.815],[0.4617,1.707],[0.4397,1.735],[0.446,1.705],[0.4553,1.774],[0.468,1.73],[0.4537,1.741],[0.46,1.666],[0.4277,1.772],[0.4147,1.814],[0.4343,1.732],[0.4357,1.725],[0.4517,1.666],[0.4113,1.803],[0.4843,1.72],[0.4313,1.792],[0.4293,1.782],[0.4387,1.747],[0.4463,1.69],[0.4467,1.772],[0.4417,1.811],[0.4213,1.738],[0.4473,1.619],[0.4143,1.826],[0.4037,1.807],[0.461,1.652],[0.474,1.534],[0.4423,1.678],[0.4463,1.646],[0.4873,1.611],[0.4457,1.726],[0.4447,1.741],[0.3923,1.959],[0.435,1.841],[0.4387,1.761],[0.426,1.805],[0.4673,1.642],[0.4417,1.718],[0.477,1.662],[0.4553,1.694],[0.453,1.708],[0.497,1.545],[0.4833,1.544],[0.4347,1.755],[0.4553,1.659],[0.458,1.682],[0.4473,1.665],[0.443,1.793],[0.452,1.764],[0.4573,1.719],[0.4537,1.723],[0.433,1.819],[0.432,1.766],[0.474,1.721],[0.4163,1.897],[0.4503,1.778],[0.4187,1.844],[0.4747,1.696],[0.423,1.757],[0.4133,1.798],[0.4177,1.877],[0.4337,1.765],[0.4747,1.626],[0.472,1.661],[0.4307,1.76],[0.436,1.655],[0.4257,1.832],[0.4363,1.785],[0.4223,1.797],[0.4723,1.626],[0.434,1.83],[0.408,1.835],[0.427,1.764],[0.4203,1.744],[0.4277,1.658],[0.471,1.697],[0.425,1.777],[0.429,1.677],[0.4177,1.78],[0.45,1.712],[0.4583,1.712],[0.4577,1.588],[0.4133,1.853],[0.4363,1.717],[0.421,1.808],[0.4447,1.688],[0.4473,1.719],[0.4457,1.756],[0.426,1.779],[0.4173,1.814],[0.4377,1.73],[0.4107,1.87],[0.4053,1.836],[0.456,1.74],[0.424,1.798],[0.4177,1.867],[0.4387,1.702],[0.436,1.784],[0.4847,1.606],[0.4477,1.631],[0.4273,1.815],[0.4703,1.679],[0.4387,1.75],[0.4827,1.585],[0.414,1.782],[0.469,1.668],[0.4403,1.702],[0.5013,1.494],[0.4403,1.683],[0.4583,1.608],[0.4993,1.547],[0.419,1.795],[0.4303,1.718],[0.4353,1.766],[0.4583,1.653],[0.4237,1.742],[0.4477,1.769],[0.4557,1.715],[0.434,1.699],[0.4393,1.715],[0.4493,1.712],[0.4437,1.691],[0.4253,1.81],[0.404,1.846],[0.4117,1.79],[0.4343,1.766],[0.4053,1.864],[0.4507,1.785],[0.4383,1.729],[0.4383,1.788],[0.4587,1.688],[0.4357,1.787],[0.4347,1.803],[0.4253,1.75],[0.4377,1.747],[0.454,1.672],[0.4843,1.583],[0.4083,1.846],[0.4297,1.865],[0.4457,1.74],[0.438,1.641],[0.4187,1.793],[0.4347,1.804],[0.4727,1.593],[0.422,1.835],[0.4473,1.681],[0.4163,1.838],[0.441,1.795],[0.4283,1.832],[0.4547,1.632],[0.4863,1.589],[0.4347,1.713],[0.4767,1.578],[0.4273,1.805],[0.4473,1.738],[0.502,1.535],[0.427,1.736],[0.443,1.718],[0.474,1.624],[0.4163,1.786],[0.4303,1.775],[0.4233,1.824],[0.4227,1.811],[0.4453,1.662],[0.392,1.949],[0.4317,1.786],[0.4503,1.645],[0.424,1.829],[0.4653,1.68],[0.422,1.721],[0.4983,1.542],[0.443,1.681],[0.452,1.675],[0.4443,1.628],[0.419,1.781],[0.4367,1.763],[0.4863,1.601],[0.4663,1.571],[0.4443,1.687],[0.448,1.737],[0.4313,1.717],[0.439,1.766],[0.4223,1.724],[0.48,1.564],[0.446,1.664],[0.4547,1.715],[0.4203,1.827],[0.4267,1.745],[0.4393,1.746],[0.4693,1.628],[0.4543,1.701],[0.423,1.756],[0.4173,1.759],[0.4227,1.789],[0.4063,1.85],[0.4383,1.783],[0.4347,1.73],[0.4403,1.729],[0.4633,1.644],[0.4437,1.686],[0.4643,1.835],[0.444,1.788],[0.4397,1.765],[0.4507,1.711],[0.4117,1.862],[0.45,1.729],[0.4297,1.808],[0.4457,1.758],[0.448,1.658],[0.4487,1.724],[0.4293,1.824],[0.4157,1.817],[0.423,1.851],[0.4767,1.641],[0.4467,1.775],[0.5183,1.472],[0.4573,1.722],[0.446,1.73],[0.4403,1.712],[0.445,1.697],[0.441,1.777],[0.4343,1.871],[0.399,1.899],[0.4233,1.775],[0.4613,1.771],[0.4323,1.72],[0.4097,1.807],[0.4137,1.801],[0.4283,1.779],[0.4323,1.766],[0.4087,1.853],[0.4527,1.64],[0.436,1.724],[0.4407,1.855],[0.4353,1.78],[0.4393,1.731],[0.4717,1.605],[0.4863,1.613],[0.4583,1.633],[0.424,1.744],[0.4417,1.766],[0.4353,1.743],[0.421,1.831],[0.406,1.86],[0.3947,1.878],[0.4447,1.689],[0.4403,1.774],[0.462,1.669],[0.464,1.632],[0.4387,1.732],[0.4263,1.708],[0.502,1.456],[0.4603,1.686],[0.4387,1.794],[0.4417,1.717],[0.489,1.67],[0.427,1.74],[0.4377,1.69],[0.436,1.649],[0.423,1.739],[0.4997,1.551],[0.4513,1.707],[0.4543,1.77],[0.4553,1.685],[0.487,1.543],[0.4467,1.742],[0.428,1.802],[0.4207,1.783],[0.4163,1.818],[0.4463,1.779],[0.466,1.573],[0.436,1.779],[0.475,1.609],[0.4207,1.761],[0.428,1.808],[0.4733,1.633],[0.4517,1.677],[0.4563,1.685],[0.4157,1.798],[0.456,1.616],[0.413,1.831],[0.467,1.711],[0.45,1.629],[0.4453,1.73],[0.4303,1.688],[0.4153,1.794],[0.426,1.859],[0.451,1.776],[0.5073,1.529],[0.4307,1.764],[0.4163,1.771],[0.4597,1.633],[0.4587,1.734],[0.4173,1.87],[0.4193,1.779],[0.4397,1.758],[0.462,1.621],[0.4667,1.71],[0.4363,1.72],[0.4487,1.789],[0.4347,1.734],[0.4313,1.763],[0.48,1.676],[0.453,1.663],[0.4443,1.699],[0.4847,1.563],[0.469,1.658],[0.456,1.683],[0.4747,1.757],[0.45,1.803],[0.414,1.81],[0.4137,1.781],[0.4417,1.723],[0.4193,1.766],[0.431,1.803],[0.434,1.757],[0.495,1.548],[0.4253,1.893],[0.448,1.763],[0.441,1.717],[0.4483,1.771],[0.4417,1.801],[0.428,1.774],[0.4027,1.904],[0.423,1.834],[0.4457,1.778],[0.425,1.822],[0.468,1.613],[0.4573,1.747],[0.42,1.855],[0.4587,1.692],[0.4103,1.818],[0.4383,1.755],[0.419,1.903],[0.4403,1.708],[0.448,1.728],[0.4603,1.724],[0.4687,1.583],[0.4367,1.717],[0.422,1.813],[0.435,1.702],[0.4693,1.741],[0.4437,1.772],[0.4333,1.737],[0.4803,1.571],[0.413,1.754],[0.4557,1.724],[0.4517,1.622],[0.4987,1.51],[0.4657,1.7],[0.479,1.65],[0.4413,1.798],[0.4893,1.627],[0.459,1.755],[0.4573,1.744],[0.4167,1.756],[0.462,1.636],[0.4207,1.807],[0.454,1.712],[0.4297,1.828],[0.4287,1.795],[0.4787,1.563],[0.435,1.762],[0.4567,1.69],[0.428,1.769],[0.4563,1.587],[0.42,1.822],[0.438,1.751],[0.4283,1.78],[0.459,1.668],[0.4257,1.803],[0.4457,1.767],[0.446,1.723],[0.434,1.765],[0.4463,1.703],[0.4293,1.734],[0.4857,1.536],[0.4587,1.668],[0.4433,1.766],[0.4367,1.733],[0.4667,1.601],[0.477,1.631],[0.44,1.757],[0.4377,1.749],[0.429,1.781],[0.437,1.777],[0.405,1.876],[0.482,1.6],[0.423,1.785],[0.4553,1.734],[0.4033,1.833],[0.4697,1.666],[0.4567,1.699],[0.4523,1.707],[0.4347,1.719],[0.496,1.616],[0.4607,1.729],[0.4417,1.695],[0.5103,1.419],[0.4807,1.661],[0.445,1.746],[0.516,1.448],[0.4577,1.673],[0.4583,1.69],[0.426,1.8],[0.471,1.638],[0.4357,1.735],[0.4237,1.79],[0.4377,1.773],[0.4467,1.721],[0.5093,1.552],[0.4563,1.744],[0.4447,1.729],[0.405,1.807],[0.4243,1.833],[0.4313,1.794],[0.4103,1.915],[0.4403,1.727],[0.4423,1.733],[0.4893,1.673],[0.4507,1.662],[0.443,1.699],[0.484,1.63],[0.4233,1.862],[0.4587,1.666],[0.3987,1.914],[0.4437,1.759],[0.429,1.75],[0.5017,1.513],[0.4327,1.738]],"robust":{"trials":300,"concentration":150,"wins_mean":{"success":57,"mean":192,"downside":49,"equal":2},"wins_p_ge2":{"success":67,"mean":145,"downside":87,"equal":1},"mean_gap_vs_equal":{"p10":0.1722845290497688,"p50":0.42146016042404244,"p90":0.7579794466574662,"share_negative":0.01}},"sizing":{"stages":{"Seed":{"avg":200000,"low":100000,"high":300000,"stepup":2.5},"Series A":{"avg":400000,"low":200000,"high":600000,"stepup":2.0}},"rounds":{"Up":{"prob":{"Seed":0.35,"Series A":0.05},"participate":0.85,"size":2.0,"price":null,"loss_shift":-0.15,"tail_mult":1.5,"signal":1,"skip_penalty":0.0},"Flat":{"prob":{"Seed":0.15,"Series A":0.15},"participate":0.5,"size":0.5,"price":1.0,"loss_shift":0.05,"tail_mult":0.8,"signal":1,"skip_penalty":0.0},"Down":{"prob":{"Seed":0.15,"Series A":0.15},"participate":0.6,"size":0.2,"price":0.6,"loss_shift":0.15,"tail_mult":0.5,"signal":0,"skip_penalty":0.5},"GradB":{"prob":{"Seed":0.0,"Series A":0.45},"participate":0.0,"size":0.0,"price":1.0,"loss_shift":-0.25,"tail_mult":2.0,"signal":1,"skip_penalty":0.0}},"capability":1.0,"fail_writeoff":0.9,"seriesB":{"participate":0.85,"size":2.0,"price":2.5},"seriesB_follow":{"enabled":1,"participate":0.85,"fill":1.0},"scale":1.0},"fund":{"size":15000000,"ed_share":0.25,"n_ed":10,"n_vc":30,"cap_per_co":1000000,"horizon":10,"initial_share":0.6},"ed":{"labels":["Strikeout / full loss","Small recovery","Capital returned","Solid single","Strong return","Outlier winner"],"mults":[0.0,0.5,1.0,3.0,8.0,20.0],"tables":{"Worst":[0.78,0.17,0.05,0.0,0.0,0.0],"Base":[0.65,0.25,0.08,0.02,0.0,0.0],"Best":[0.5,0.25,0.15,0.08,0.02,0.0]},"vc_tables":{"Worst":[0.68,0.17,0.1,0.04,0.01,0.0],"Base":[0.52,0.2,0.1,0.1,0.06,0.02],"Best":[0.38,0.15,0.1,0.15,0.13,0.09]},"regime_probs":{"Worst":0.25,"Base":0.5,"Best":0.25}}};
+eval(document.getElementById('engine-src').textContent);
+const K=D.subs.length, VCOL={"Life Sciences":"var(--ls)","Software":"var(--sw)","Hard Tech":"var(--ht)"};
+const vidx=D.subs.map(s=>D.verticals.indexOf(s.vert));
+const lo=D.bounds.map(b=>b[0]), hi=D.bounds.map(b=>b[1]);
+const clone=o=>JSON.parse(JSON.stringify(o));
+let base=clone(D.subs);
+const st={counts:(D.presets.current||D.presets.equal).counts.slice(),seed:D.defaults.seed_share,inv:D.defaults.invested_frac,carry:D.defaults.carry,
+  target:D.defaults.target,lossCap:D.defaults.loss_cap,sg:D.defaults.sigma_global,sv:D.defaults.sigma_vertical,
+  lossShift:0,tail:1,cap50:250,presets:clone(D.presets),cloud:D.cloud,optDefault:true,
+  sz:clone(D.sizing),cyc:clone(D.cycle),edShare:D.fund.ed_share,nED:D.fund.n_ed,fundSize:D.fund.size,capCo:D.fund.cap_per_co,edT:clone(D.ed.tables),regP:clone(D.ed.regime_probs)};
+const REG=["Worst","Base","Best"];
+const usd=x=>(x<0?'-':'')+'$'+(Math.abs(x)>=1e6?(Math.abs(x)/1e6).toFixed(1)+'M':Math.round(Math.abs(x)/1e3)+'K');
+function edCfg(share,n){const cum=REG.map(r=>{let t=0;const c=st.edT[r].map(x=>t+=x);c[5]=1;return c});
+  return {share:share??st.edShare,n:n??st.nED,mults:D.ed.mults,cum,zw:ninv(st.regP.Worst),zb:ninv(1-st.regP.Best)}}
+function edExpected(){return REG.reduce((a,r)=>a+st.regP[r]*st.edT[r].reduce((b,x,i)=>b+x*D.ed.mults[i],0),0)}
+const $=id=>document.getElementById(id);
+const fmtx=x=>x.toFixed(2)+'x', pct=x=>(x*100).toFixed(1)+'%';
+const bucketMean=(l,h)=>h===0?0:(h-l)/Math.log(h/l);
+
+function effectiveProbs(row){ // apply stress to one probability row
+  let p=row.slice();
+  for(const i of [6,7])p[i]*=st.tail;
+  let s=p.reduce((a,b)=>a+b,0); // renormalize via 1-3x bucket
+  p[2]+=1-s; if(p[2]<0){p=p.map(x=>Math.max(0,x));s=p.reduce((a,b)=>a+b,0);p=p.map(x=>x/s)}
+  if(st.lossShift){const d=st.lossShift,up=p.slice(2).reduce((a,b)=>a+b,0);
+    let dd=Math.max(-p[0],Math.min(d,up));p[0]+=dd;for(let i=2;i<8;i++)p[i]-=dd*(p[i]/up);}
+  return p;}
+function blended(){return base.map(s=>{const a=effectiveProbs(s.seed),b=effectiveProbs(s.a);return a.map((x,i)=>st.seed*x+(1-st.seed)*b[i])})}
+function cumM(sz){const ps=base.map(x=>effectiveProbs(x.seed)),pa=base.map(x=>effectiveProbs(x.a)),z=sz||st.sz,b=buildCum(ps,pa,z.rounds,z.fail_writeoff);return {cum:b.cum,clip:b.clip,seed:st.seed,sz:z,F:st.fundSize,capCo:st.capCo,csig:st.cyc.map(c=>c.sigma),ctilt:st.cyc.map(c=>c.outlook)}}
+function cumOf(p){return p.map(r=>{const c=[];let t=0;for(let i=0;i<8;i++){t+=r[i];c.push(t)}c[7]=1;return c})}
+function hiNow(){const h=hi.slice();h[7]=st.cap50;return h}
+
+function renderAlloc(){
+  const p=blended(),bm=D.bounds.map((b,i)=>bucketMean(b[0],i===7?st.cap50:b[1]));
+  let html='';
+  D.verticals.forEach(v=>{
+    const idx=D.subs.map((s,i)=>s.vert===v?i:-1).filter(i=>i>=0);
+    const n=idx.reduce((a,i)=>a+st.counts[i],0);
+    html+=`<div class="vgroup" style="--vc:${VCOL[v]}"><div class="vhead"><h3>${v}</h3><span>${n} deals</span></div>`;
+    idx.forEach(i=>{const s=D.subs[i],mean=p[i].reduce((a,x,j)=>a+x*bm[j],0),loss=p[i][0]+p[i][1];
+      html+=`<div class="row"><div class="nm"><b title="${s.why.replace(/"/g,'&quot;')}">${s.name}</b><small>E ${mean.toFixed(2)}x · loss ${Math.round(loss*100)}%</small></div>
+      <span class="conf ${s.conf.split(' ')[0]}">${s.conf}</span>
+      <div class="step"><button aria-label="Remove a ${s.name} deal" data-d="-1" data-i="${i}">−</button><input id="c${i}" inputmode="numeric" aria-label="${s.name} deals" value="${st.counts[i]}"><button aria-label="Add a ${s.name} deal" data-d="1" data-i="${i}">+</button></div></div>`});
+    html+='</div>'});
+  $('alloc').innerHTML=html;
+  $('alloc').querySelectorAll('button').forEach(b=>b.onclick=()=>{const i=+b.dataset.i;st.counts[i]=Math.max(0,Math.min(40,st.counts[i]+ +b.dataset.d));update()});
+  $('alloc').querySelectorAll('input').forEach(inp=>inp.onchange=()=>{const i=+inp.id.slice(1);st.counts[i]=Math.max(0,Math.min(40,parseInt(inp.value)||0));update()});
+}
+function renderED(){
+  $('edctl').innerHTML=`<div class="terms" style="margin-top:8px">
+   <label for="t_edShare">Share of fund<span class="val"><input type="range" id="t_edShare" min="0" max="0.5" step="0.05" value="${st.edShare}"><output id="o_edShare" style="min-width:52px;text-align:right">${pct(st.edShare)}</output></span></label>
+   <label for="t_cap">Max all-in per company ($K)<span class="val"><input type="range" id="t_cap" min="100" max="3000" step="50" value="${st.capCo/1e3}"><output id="o_cap" style="min-width:52px;text-align:right">${usd(st.capCo)}</output></span></label>
+   <label for="t_fund">Fund size ($M)<span class="val"><input type="range" id="t_fund" min="5" max="50" step="1" value="${st.fundSize/1e6}"><output id="o_fund" style="min-width:52px;text-align:right">$${st.fundSize/1e6}M</output></span></label></div>
+   <div class="row" style="border-bottom:0"><div class="nm"><b>ED companies</b><small>E ${edExpected().toFixed(2)}x per check (regime-weighted)</small></div><span class="conf">Elevate tables</span>
+   <div class="step"><button aria-label="Remove an ED company" id="edm">−</button><input id="edn" inputmode="numeric" aria-label="ED companies" value="${st.nED}"><button aria-label="Add an ED company" id="edp">+</button></div></div>`;
+  $('t_edShare').oninput=e=>{st.edShare=+e.target.value;$('o_edShare').textContent=pct(st.edShare);markStale();schedule()};
+  $('t_cap').oninput=e=>{st.capCo=+e.target.value*1e3;$('o_cap').textContent=usd(st.capCo);markStale();schedule()};
+  $('t_fund').oninput=e=>{st.fundSize=+e.target.value*1e6;$('o_fund').textContent='$'+e.target.value+'M';schedule()};
+  $('edm').onclick=()=>{st.nED=Math.max(0,st.nED-1);markStale();renderED();update()};
+  $('edp').onclick=()=>{st.nED=Math.min(EDMAX,st.nED+1);markStale();renderED();update()};
+  $('edn').onchange=e=>{st.nED=Math.max(0,Math.min(EDMAX,parseInt(e.target.value)||0));markStale();renderED();update()};
+}
+const sx=v=>(v>=0?'+':'−')+Math.abs(v).toFixed(3)+'x';
+function expDollars(z){const cap=st.capCo,sc=z.scale,BF=z.seriesB_follow;let ini=0,fol=0;
+  STG.forEach((g,gi)=>{const d=z.stages[g],wg=gi===0?st.seed:1-st.seed,h=d.high>d.low?Math.min(1,Math.max(0,(d.avg-d.low)/(d.high-d.low))):0;
+    [[h,d.high,1],[1-h,d.low,0]].forEach(([wc,amt,isHi])=>{const C=Math.min(cap,sc*amt),room=Math.max(0,cap-C);ini+=wg*wc*C;
+      fol+=wg*wc*FT.reduce((a,t)=>a+z.rounds[t].prob[g]*z.rounds[t].participate*Math.min(z.rounds[t].size*C,room),0);
+      if(g==="Series A"&&isHi&&BF&&BF.enabled)fol+=wg*wc*z.rounds.GradB.prob[g]*BF.participate*BF.fill*room})});
+  return {ini,fol}}
+function ffac(z){const e=expDollars(z);return e.ini?e.fol/e.ini:0}
+function renderSizingInputs(){
+  const S=st.sz.stages,num=(id,v,lab)=>`<input id="${id}" inputmode="numeric" aria-label="${lab}" value="${v}" style="width:50px;padding:3px 4px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--fg);font:12px var(--mono);text-align:right">`;
+  let h='<div class="scroll"><table style="font-size:13px"><thead><tr><th>Stage ($K)</th><th>Avg</th><th>Low</th><th>High</th><th>Step-up</th></tr></thead><tbody>';
+  STG.forEach((g,i)=>{const d=S[g];h+=`<tr><td>${g}</td><td>${num('sz_'+i+'_avg',d.avg/1e3,g+' average check')}</td><td>${num('sz_'+i+'_low',d.low/1e3,g+' low-conviction check')}</td><td>${num('sz_'+i+'_high',d.high/1e3,g+' high-conviction check')}</td><td>${num('sz_'+i+'_stepup',d.stepup,g+' follow-on step-up')}</td></tr>`});
+  h+='</tbody></table></div>';
+  h+=`<div style="margin-top:8px;font-size:12px"><label for="capin"><b>Investor capability</b></label> ${num('capin',st.sz.capability,'Investor capability multiplier')}x success odds on high-conviction checks <span id="capnote" class="note"></span></div>`;
+  const RL={Up:'Up',Flat:'Flat',Down:'Down',GradB:'Series B'},na='<td class="num" style="color:var(--muted)">–</td>';
+  const F=[['probS','Chance: seed',100,'%'],['probA','Chance: Series A',100,'%'],['participate','Elevate joins',100,'%'],['size','Follow-on (x initial)',1,'x'],['price','Price vs entry',1,'x'],['loss_shift','< 1x odds shift',100,'pp'],['tail_mult','10x+ share ×',1,'x'],['skip_penalty','Penalty if skipped',100,'%'],['signal','Signal only',1,'']];
+  h+='<div class="scroll" style="margin-top:10px"><table style="font-size:12px"><thead><tr><th>Next round</th>'+RT.map(t=>`<th>${RL[t]}</th>`).join('')+'</tr></thead><tbody>';
+  F.forEach(([k,lab,mul,unit])=>{h+=`<tr><td style="white-space:normal">${lab}${unit?' ('+unit+')':''}</td>`+RT.map(t=>{const R=st.sz.rounds[t];
+    if(t==='GradB'&&['participate','size','price','skip_penalty'].includes(k))return na;
+    if(k==='price'&&t==='Up')return '<td class="num" style="font-size:11px">step-up</td>';
+    if(k==='signal')return `<td><input type="checkbox" id="rd_${t}_${k}" ${R[k]?'checked':''} aria-label="${t} is a signal only"></td>`;
+    const v=k==='probS'?R.prob.Seed:k==='probA'?R.prob["Series A"]:R[k];
+    return `<td>${num('rd_'+t+'_'+k,+(v*mul).toFixed(2),t+' '+lab)}</td>`}).join('')+'</tr>'});
+  h+=`<tr><td style="white-space:normal">Fails before next round</td><td colspan="4" class="num" id="failp"></td></tr>`;
+  h+=`<tr><td style="white-space:normal">Failures that are total write-offs (%)</td><td colspan="4">${num('fw',Math.round(st.sz.fail_writeoff*100),'Share of failures that are total write-offs')}</td></tr></tbody></table></div>`;
+  h+=`<div style="margin-top:10px;font-size:12px"><b>Series B follow-on for high-conviction Series A checks</b>: <label><input type="checkbox" id="bf_enabled" ${st.sz.seriesB_follow.enabled?'checked':''}> on</label> · joins ${num('bf_participate',Math.round(st.sz.seriesB_follow.participate*100),'Series B follow-on participation %')}% · fills ${num('bf_fill',Math.round(st.sz.seriesB_follow.fill*100),'Share of room under the per-company max')}% of the room up to the per-company max, at the Series B price below</div>`;
+  h+=`<div style="margin-top:6px;font-size:12px"><b>Series B counterfactual</b> (graduating companies Elevate does not follow) (if Elevate could follow on): joins ${num('sb_participate',Math.round(st.sz.seriesB.participate*100),'Series B participation %')}% · size ${num('sb_size',st.sz.seriesB.size,'Series B follow-on size x initial')}x initial · price ${num('sb_price',st.sz.seriesB.price,'Series B price vs Series A entry')}x Series A entry</div>`;
+  h+='<div id="szsum" class="note" style="margin-top:8px;font-size:12px"></div>';
+  $('sizing').innerHTML=h;
+  $('sizing').querySelectorAll('input[id^="sz_"]').forEach(inp=>inp.onchange=()=>{const [,i,k]=inp.id.split('_'),g=i==='0'?'Seed':'Series A',v=parseFloat(inp.value);
+    if(isNaN(v)||v<0){renderSizingInputs();return}st.sz.stages[g][k]=k==='stepup'?Math.max(1,v):v*1e3;markStale();schedule()});
+  const MUL={probS:100,probA:100,participate:100,size:1,price:1,loss_shift:100,tail_mult:1,skip_penalty:100};
+  $('sizing').querySelectorAll('input[id^="rd_"]').forEach(inp=>inp.onchange=()=>{const [,t,...kk]=inp.id.split('_'),k=kk.join('_'),R=st.sz.rounds[t];
+    if(k==='signal'){R.signal=inp.checked?1:0}else{const v=parseFloat(inp.value);if(isNaN(v)){renderSizingInputs();return}
+      let x=v/MUL[k];if(['probS','probA','participate','skip_penalty'].includes(k))x=Math.min(1,Math.max(0,x));if(['size','tail_mult'].includes(k))x=Math.max(0,x);if(k==='price')x=Math.max(.05,x);
+      if(k==='probS')R.prob.Seed=x;else if(k==='probA')R.prob["Series A"]=x;else R[k]=x}
+    markStale();schedule()});
+  $('capin').onchange=e=>{const v=parseFloat(e.target.value);if(!isNaN(v))st.sz.capability=Math.max(0,v);markStale();schedule()};
+  $('bf_enabled').onchange=e=>{st.sz.seriesB_follow.enabled=e.target.checked?1:0;markStale();schedule()};
+  [['participate'],['fill']].forEach(([k])=>{$('bf_'+k).onchange=e=>{const v=parseFloat(e.target.value);if(!isNaN(v))st.sz.seriesB_follow[k]=Math.min(1,Math.max(0,v/100));markStale();schedule()}});
+  $('fw').onchange=e=>{const v=parseFloat(e.target.value);if(!isNaN(v))st.sz.fail_writeoff=Math.min(1,Math.max(0,v/100));markStale();schedule()};
+  [['participate',100],['size',1],['price',1]].forEach(([k,m])=>{$('sb_'+k).onchange=e=>{const v=parseFloat(e.target.value);if(!isNaN(v))st.sz.seriesB[k]=k==='participate'?Math.min(1,Math.max(0,v/m)):Math.max(k==='price'?.05:0,v);schedule()}});
+}
+function renderSizing(cash,N,col,clip,trk){
+  const S=st.sz.stages,bud=st.fundSize*(1-(st.nED?st.edShare:0)),nS=cash.dep.length;
+  const hs=d=>d.high>d.low?(d.avg-d.low)/(d.high-d.low):0;
+  const bad=STG.filter(g=>S[g].avg<S[g].low||S[g].avg>S[g].high);
+  const _e=expDollars(st.sz),ei=_e.ini,ef=_e.fol;
+  const dm=cash.dep.reduce((a,b)=>a+b,0)/nS,over=cash.dep.filter(x=>x>bud).length/nS;
+  const maxAll=st.sz.scale*Math.max(S.Seed.high,S["Series A"].high)*(1+Math.max(...FT.map(t=>st.sz.rounds[t].size)));
+  const pf=STG.map(g=>1-RT.reduce((a,t)=>a+st.sz.rounds[t].prob[g],0));
+  {const cp=st.sz.capability,hh=STG.map(g=>Math.max(0,Math.min(1,hs(S[g])))),lo_=hh.map(x=>x<1?Math.max(0,(1-x*cp)/(1-x)):1);
+   $('capnote').innerHTML=cp===1?'(1.0 = no skill)':Math.max(...hh)*cp>1?'<span style="color:var(--bad)">too high: low-conviction success hits zero</span>':`(low-conviction checks get ${lo_[0].toFixed(2)}x seed / ${lo_[1].toFixed(2)}x Series A so average success is unchanged)`}
+  $('failp').innerHTML=pf.some(x=>x<-1e-9)?'<span style="color:var(--bad)">probabilities exceed 100%</span>':`seed ${pct(pf[0])} · Series A ${pct(pf[1])} (the remainder)`;
+  let h=(bad.length?`<span style="color:var(--bad)">${bad.join(' and ')}: average must sit between low and high.</span><br>`:'')+
+   `High-conviction share: seed ${pct(Math.max(0,Math.min(1,hs(S.Seed))))}, Series A ${pct(Math.max(0,Math.min(1,hs(S["Series A"]))))}. `+
+   `Expected deployment: ${usd(ei*N)} initial + ${usd(ef*N)} follow-on = ${usd((ei+ef)*N)} vs ${usd(bud)} VC budget `+
+   `(reserve budget at 60/40: ${usd(bud*(1-D.fund.initial_share))}). Simulated mean ${usd(dm)}; exceeds budget in <b style="color:${over>.25?'var(--bad)':'var(--fg)'}">${pct(over)}</b> of funds. `+
+   (maxAll>st.capCo?`Checks and follow-ons are trimmed so no company exceeds the ${usd(st.capCo)} maximum (uncapped largest would be ${usd(maxAll)}).`:`Largest all-in per company ${usd(maxAll)}, within the ${usd(st.capCo)} maximum.`)+
+   (clip?' <b style="color:var(--bad)">Signal impacts are too large for some subverticals to stay at their base odds; overall odds have shifted.</b>':'');
+  if(col&&N){const LB=['Up round','Flat / bridge','Down round','Raised Series B','Failed'];
+    h+='<div class="scroll" style="margin-top:8px"><table style="font-size:12px"><thead><tr><th>Next round</th><th>Share</th><th>Elevate joined</th><th>Mean multiple</th><th>P(&lt; 1x)</th><th>Follow-on $ / fund</th></tr></thead><tbody>'+
+     LB.map((t,i)=>{const a=col[i],n=a.n||1;return `<tr><td>${t}</td><td class="num">${pct(a.n/(nS*N))}</td><td class="num">${i<4?pct(a.j/n):'–'}</td><td class="num">${fmtx(a.m/n)}</td><td class="num">${pct(a.l/n)}</td><td class="num">${usd(a.fo/nS)}</td></tr>`}).join('')+'</tbody></table></div>'}
+  $('szsum').innerHTML=h;
+  // breakout + counterfactual
+  if(trk&&N){const rows=[['Seed initial checks',trk[0].ii,trk[0].pi],['Seed follow-ons',trk[0].if,trk[0].pf],['Series A initial checks',trk[1].ii,trk[1].pi],['Series A follow-ons',trk[1].if,trk[1].pf]];
+    const ti=rows.reduce((a,r)=>a+r[1],0),tp=rows.reduce((a,r)=>a+r[2],0);
+    let b='<thead><tr><th>Investment</th><th>Invested</th><th>Proceeds</th><th>Multiple</th><th>Share of VC $</th><th>Adds to TVPI</th></tr></thead><tbody>';
+    rows.concat([['Total VC sleeve',ti,tp]]).forEach((r,i)=>{b+=`<tr class="${i===4?'vsep':''}"><td>${r[0]}</td><td class="num">${usd(r[1]/nS)}</td><td class="num">${usd(r[2]/nS)}</td><td class="num">${r[1]?fmtx(r[2]/r[1]):'–'}</td><td class="num">${ti?pct(r[1]/ti):'–'}</td><td class="num">${fmtx(r[2]/nS/st.fundSize)}</td></tr>`});
+    $('breakout').innerHTML=b+'</tbody>';
+    const hg=trk.hg.slice().sort((a,c)=>a-c),mean=hg.reduce((a,c)=>a+c,0)/nS,med=hg[Math.floor(nS/2)],p90=hg[Math.floor(nS*.9)],bd=trk.bd/nS;
+    const unused=Math.max(0,bud*(1-D.fund.initial_share)-(trk[0].if+trk[1].if)/nS);
+    $('cfbox').innerHTML=`<b>TVPI given up by not following on into Series B.</b> About ${(trk.bn/nS).toFixed(1)} Series A companies per fund raise a Series B. Following on would have put ${usd(bd)} per fund to work at ${st.sz.seriesB.price}x the Series A price, earning ${bd?fmtx(1+mean/bd):'–'} on those dollars. `+
+      `That is <b>${sx(mean/st.fundSize)}</b> of mean fund TVPI (median ${sx(med/st.fundSize)}, 90th percentile ${sx(p90/st.fundSize)}), against about ${usd(unused)} of reserves that go unused on average. The mean comes from a few large winners; assumes the dollars would otherwise sit as cash at 1.0x.`}
+  else{$('breakout').innerHTML='';$('cfbox').innerHTML=''}
+}
+function renderCycTable(){
+  let h='<thead><tr><th>Subvertical</th><th>Cycle volatility (σ)</th><th>Outlook ×</th></tr></thead><tbody>';
+  D.subs.forEach((s,i)=>{h+=`<tr class="${i>0&&D.subs[i-1].vert!==s.vert?'vsep':''}"><td>${s.name}</td><td><input id="cy_${i}_sigma" value="${st.cyc[i].sigma}" aria-label="${s.name} cycle volatility"></td><td><input id="cy_${i}_outlook" value="${st.cyc[i].outlook}" aria-label="${s.name} outlook multiplier"></td></tr>`});
+  $('cyctable').innerHTML=h+'</tbody>';
+  $('cyctable').querySelectorAll('input').forEach(inp=>inp.onchange=()=>{const [,i,k]=inp.id.split('_'),v=parseFloat(inp.value);if(isNaN(v)||v<0){renderCycTable();return}st.cyc[+i][k]=v;markStale();schedule()});
+}
+function renderEDTable(){
+  let h='<thead><tr><th>Outcome</th><th>Multiple</th>'+REG.map(r=>`<th>${r}</th>`).join('')+'</tr></thead><tbody>';
+  D.ed.labels.forEach((l,i)=>{h+=`<tr><td>${l}</td><td class="num">${D.ed.mults[i]}x</td>`+REG.map(r=>`<td><input id="e_${r}_${i}" value="${(st.edT[r][i]*100).toFixed(1)}" aria-label="ED ${r} ${l}"></td>`).join('')+'</tr>'});
+  h+='<tr class="vsep"><td>Sum</td><td></td>'+REG.map(r=>{const sm=st.edT[r].reduce((a,b)=>a+b,0);return `<td class="num sum ${Math.abs(sm-1)>.0015?'bad':''}">${(sm*100).toFixed(1)}%</td>`}).join('')+'</tr>';
+  h+='<tr><td>Expected multiple</td><td></td>'+REG.map(r=>`<td class="num">${fmtx(st.edT[r].reduce((a,x,i)=>a+x*D.ed.mults[i],0))}</td>`).join('')+'</tr>';
+  h+='<tr><td>Regime probability (judgment)</td><td></td>'+REG.map(r=>`<td><input id="rp_${r}" value="${(st.regP[r]*100).toFixed(0)}" aria-label="${r} regime probability"></td>`).join('')+'</tr></tbody>';
+  $('edtable').innerHTML=h;
+  $('edtable').querySelectorAll('input').forEach(inp=>inp.onchange=()=>{const v=parseFloat(inp.value);if(isNaN(v)||v<0)return renderEDTable();
+    const pr=inp.id.split('_');if(pr[0]==='e')st.edT[pr[1]][+pr[2]]=v/100;else{st.regP[pr[1]]=v/100;if(pr[1]!=='Base')st.regP.Base=Math.max(0,1-st.regP.Worst-st.regP.Best)}
+    renderEDTable();renderED();markStale();schedule()});
+}
+const PRESETS=[["current","Elevate mix"],["equal","Equal weight"],["success","Max P(≥ target)"],["mean","Max mean"],["downside","Downside-capped"]];
+function renderPresets(){ $('presets').innerHTML=PRESETS.map(([k,l])=>`<button class="btn" data-k="${k}">${l}</button>`).join('');
+  $('presets').querySelectorAll('button').forEach(b=>b.onclick=()=>{st.counts=st.presets[b.dataset.k].counts.slice();update()})}
+const TERMS=[["seed","Seed share of checks",0,1,.05,pct],["inv","Invested share (after fees)",.6,1,.01,pct],["carry","Carry",0,.3,.01,pct],
+ ["target","Success target (fund)",1,5,.25,fmtx],["lossCap","Downside cap P(< 1x)",.05,.5,.01,pct],["sg","Global cycle σ",0,.8,.05,x=>x.toFixed(2)],["sv","Vertical cycle σ",0,.8,.05,x=>x.toFixed(2)]];
+function renderTerms(){ $('terms').innerHTML=TERMS.map(([k,l,a,b,s,f])=>`<label for="t_${k}">${l}<span class="val"><input type="range" id="t_${k}" min="${a}" max="${b}" step="${s}" value="${st[k]}"><output id="o_${k}" style="min-width:52px;text-align:right">${f(st[k])}</output></span></label>`).join('');
+  TERMS.forEach(([k,,,,,f])=>{$('t_'+k).oninput=e=>{st[k]=+e.target.value;$('o_'+k).textContent=f(st[k]);schedule()}})}
+const STRESS=[["lossShift","Loss shift (write-offs)",-.15,.15,.01,x=>(x>=0?'+':'')+(x*100).toFixed(0)+' pp'],["tail","Tail scale (20x+ odds)",0,2,.1,x=>x.toFixed(1)+'×'],["cap50","50x+ bucket cap",50,500,10,x=>x+'x']];
+function renderStress(){ $('stress').innerHTML=STRESS.map(([k,l,a,b,s,f])=>`<label class="terms" style="display:grid;gap:3px;font-size:12px;color:var(--muted)" for="s_${k}">${l}<span class="val" style="display:flex;gap:8px;font:500 13px var(--mono);color:var(--fg)"><input type="range" id="s_${k}" min="${a}" max="${b}" step="${s}" value="${st[k]}"><output id="so_${k}" style="min-width:56px;text-align:right">${f(st[k])}</output></span></label>`).join('');
+  STRESS.forEach(([k,,,,,f])=>{$('s_'+k).oninput=e=>{st[k]=+e.target.value;$('so_'+k).textContent=f(st[k]);markStale();schedule()}})}
+function renderATable(){
+  let h='<thead><tr><th>Subvertical</th><th>Stage</th>'+D.buckets.map(b=>`<th>${b}</th>`).join('')+'<th>Sum</th></tr></thead><tbody>';
+  base.forEach((s,i)=>{[['seed','Seed'],['a','Series A']].forEach(([key,lab],j)=>{const sum=s[key].reduce((a,b)=>a+b,0);
+    h+=`<tr class="${j===0&&i>0&&base[i-1].vert!==s.vert?'vsep':''}"><td>${j===0?s.name:''}</td><td style="text-align:left">${lab}</td>`+s[key].map((x,b)=>`<td><input id="a_${i}_${key}_${b}" value="${(x*100).toFixed(1)}" aria-label="${s.name} ${lab} ${D.buckets[b]}"></td>`).join('')+`<td class="num sum ${Math.abs(sum-1)>.0015?'bad':''}" id="sum_${i}_${key}">${(sum*100).toFixed(1)}%</td></tr>`})});
+  $('atable').innerHTML=h+'</tbody>';
+  $('atable').querySelectorAll('input').forEach(inp=>inp.onchange=()=>{const [,i,key,b]=inp.id.split('_');const v=parseFloat(inp.value);if(isNaN(v)||v<0){inp.value=(base[i][key][b]*100).toFixed(1);return}
+    base[i][key][+b]=v/100;const sum=base[i][key].reduce((a,c)=>a+c,0),cell=$(`sum_${i}_${key}`);cell.textContent=(sum*100).toFixed(1)+'%';cell.classList.toggle('bad',Math.abs(sum-1)>.0015);markStale();schedule()});
+}
+function markStale(){if(st.optDefault){$('optprog').textContent='Assumptions changed: optimizer results shown are for the defaults'}}
+
+let timer=null;function schedule(){clearTimeout(timer);timer=setTimeout(update,120)}
+let simCache=null;
+function getSim(n){const key=[n,st.sg,st.sv].join('|');if(!simCache||simCache.key!==key){simCache={key,sim:makeSim(10000,40,7,st.sg,st.sv,3)}}return simCache.sim}
+
+function update(){
+  renderAlloc();
+  const N=st.counts.reduce((a,b)=>a+b,0),p=blended(),cum=cumM(),h=hiNow();
+  const sim=getSim(N),ed=edCfg(),edArr=edRun(sim,ed),col=[0,1,2,3,4].map(()=>({n:0,m:0,l:0,fo:0,j:0}));cum.collect=col;const trk=[{ii:0,pi:0,if:0,pf:0},{ii:0,pi:0,if:0,pf:0}];trk.bd=0;trk.bn=0;trk.hg=[];cum.track=trk;
+  const cash=vcCash(sim,st.counts,cum,lo,h,vidx);cum.collect=null;cum.track=null;
+  const vcArr=new Float64Array(sim.S);for(let i=0;i<sim.S;i++)vcArr[i]=cash.dep[i]>0?cash.pr[i]/cash.dep[i]:0;
+  const ok=N||st.nED;
+  const fg=ok?fundRun(sim,st.counts,cum,lo,h,vidx,ed,edArr,cash):new Float64Array(0);
+  renderSizing(cash,N,col,cum.clip,trk);
+  const nt=ok?netOf(fg,st.inv,st.carry):new Float64Array(0);
+  const s=ok?summarize(nt,st.target):null; st.current=s;
+  const meanG=ok?fg.reduce((a,b)=>a+b,0)/fg.length:0;
+  const K4=[["Mean fund TVPI",s?fmtx(s.mean):'–',s?`median ${fmtx(s.median)}`:''],["P(fund < 1x)",s?pct(s.p_lt1):'–',s?`P10 ${fmtx(s.p10)}`:'',s&&s.p_lt1>st.lossCap?'bad':''],
+   ["P(fund ≥ "+st.target.toFixed(2).replace(/\.?0+$/,'')+"x)",s?pct(s.p_target):'–',s?`P(≥3x) ${pct(s.p_ge3)}`:'','good'],["Expected gross proceeds",usd(meanG*st.fundSize),`${st.nED} ED + ${N} VC companies`]];
+  $('kpis').innerHTML=K4.map(([l,v,sub,c])=>`<div class="kpi"><div class="l">${l}</div><div class="v ${c||''}">${v}</div><div class="s">${sub}</div></div>`).join('');
+  // mix bar
+  const byV=D.verticals.map(v=>D.subs.reduce((a,x,i)=>a+(x.vert===v?st.counts[i]:0),0));
+  $('mixbar').innerHTML=byV.map((c,i)=>`<div style="width:${N?c/N*100:0}%;background:${VCOL[D.verticals[i]]}"></div>`).join('');
+  $('mixlegend').innerHTML=byV.map((c,i)=>`<span><i style="background:${VCOL[D.verticals[i]]}"></i>${D.verticals[i]} ${N?Math.round(c/N*100):0}%</span>`).join('');
+  $('edhead').textContent=`${st.nED} companies · ${pct(st.edShare)}`;$('vchead').textContent=`${N} companies · ${pct(st.nED?1-st.edShare:1)}`;
+  drawHist(nt,s); drawBuckets(p); drawFrontier(); renderDual(sim,ed,edArr,vcArr,fg,N,cum,h,cash);
+  $('histnote').textContent=N>40?'Maximum is 40 VC deals; reduce the counts.':s?`Half of simulated funds return less than ${fmtx(s.median)}; one in ten returns more than ${fmtx(s.p90)}. The gap between mean and median is the power law at work.`:'Add deals to simulate.';
+}
+function stats(a){const x=Array.from(a).sort((p,q)=>p-q),n=x.length||1,q=f=>x[Math.min(n-1,Math.floor(f*n))];let m=0,l=0;for(const v of x){m+=v;if(v<1)l++}return {mean:m/n,median:q(.5),p10:q(.1),p90:q(.9),p_lt1:l/n}}
+let shareCache={key:null,pts:null};
+function renderDual(sim,ed,edArr,vcArr,fg,N,cum,h,cash){
+  const sh=st.nED?st.edShare:0,edCap=st.fundSize*sh,vcCap=st.fundSize-edCap;
+  const E=st.nED?stats(edArr):null,V=N?stats(vcArr):null,F=stats(fg);
+  const cell=(o,k,f)=>o?f(o[k]):'–';
+  const chk=(cap,n)=>n?usd(cap/n)+(cap/n>st.capCo?' <span style="color:var(--bad)">over cap</span>':''):'–';
+  const depMean=cash.dep.reduce((a,b)=>a+b,0)/sim.S,prMean=cash.pr.reduce((a,b)=>a+b,0)/sim.S;
+  let t='<thead><tr><th></th><th>ED sleeve</th><th>VC sleeve</th><th>Fund</th></tr></thead><tbody>';
+  const rows=[["Capital",usd(edCap),usd(vcCap),usd(st.fundSize)],["Companies",st.nED,N,st.nED+N],["Average all-in per company",chk(edCap,st.nED),N?usd(depMean/N):'–',''],
+    ["Mean gross multiple",cell(E,'mean',fmtx),cell(V,'mean',fmtx),fmtx(F.mean)],["Median",cell(E,'median',fmtx),cell(V,'median',fmtx),fmtx(F.median)],
+    ["10th / 90th percentile",E?fmtx(E.p10)+' / '+fmtx(E.p90):'–',V?fmtx(V.p10)+' / '+fmtx(V.p90):'–',fmtx(F.p10)+' / '+fmtx(F.p90)],
+    ["P(< 1x)",cell(E,'p_lt1',pct),cell(V,'p_lt1',pct),pct(F.p_lt1)],["Expected gross proceeds",E?usd(E.mean*edCap):'–',N?usd(prMean):'–',usd(F.mean*st.fundSize)]];
+  rows.forEach(r=>t+=`<tr><td>${r[0]}</td><td class="num">${r[1]}</td><td class="num">${r[2]}</td><td class="num">${r[3]}</td></tr>`);
+  $('sleevetable').innerHTML=t+'</tbody>';
+  // regimes
+  const acc=REG.map(()=>({n:0,e:0,v:0,f:0,l:0}));
+  for(let i=0;i<sim.S;i++){const r=regimeOf(sim.zg[i],ed),a=acc[r];a.n++;a.e+=edArr[i];a.v+=vcArr[i];a.f+=fg[i];if(fg[i]<1)a.l++}
+  const evT=r=>st.edT[r].reduce((a,x,i)=>a+x*D.ed.mults[i],0),evV=r=>D.ed.vc_tables[r].reduce((a,x,i)=>a+x*D.ed.mults[i],0);
+  let rt='<thead><tr><th>Regime</th><th>Share of funds</th><th>Mean ED</th><th>Mean VC</th><th>Mean fund</th><th>P(fund &lt; 1x)</th><th>Elevate workbook</th></tr></thead><tbody>';
+  REG.forEach((r,i)=>{const a=acc[i],n=a.n||1;rt+=`<tr><td>${r}</td><td class="num">${pct(a.n/sim.S)}</td><td class="num">${st.nED?fmtx(a.e/n):'–'}</td><td class="num">${N?fmtx(a.v/n):'–'}</td><td class="num">${fmtx(a.f/n)}</td><td class="num">${pct(a.l/n)}</td><td class="num">${fmtx(st.edShare*evT(r)+(1-st.edShare)*evV(r))}</td></tr>`});
+  $('regimetable').innerHTML=rt+'</tbody><caption style="caption-side:bottom;text-align:left;padding-top:6px;color:var(--muted);font-size:12px">The last column applies Elevate\'s own Worst/Base/Best tables to every deal at once, as their dashboard does (VC sleeve from their tables, not the vertical model).</caption>';
+  // cost
+  const eE=edExpected(),vE=V?V.mean:0,gap=vE-eE;
+  $('costbox').innerHTML=st.nED&&N?`<b>Cost of the ED allocation.</b> Each ED dollar is expected to return ${fmtx(eE)} against ${fmtx(vE)} in this VC mix, a gap of ${fmtx(gap)}. On a ${usd(edCap)} sleeve that is about <b>${usd(gap*edCap)}</b> of expected proceeds forgone (${usd(gap*edCap/st.nED)} per ED company), with no credit for jobs or other indirect returns. With Elevate's own VC tables the gap would be ${fmtx(REG.reduce((a,r)=>a+st.regP[r]*evV(r),0)-eE)} per dollar.`:'<b>Cost of the ED allocation.</b> Add both ED and VC companies to compare the sleeves.';
+  // share sensitivity
+  const tot=st.nED+N,key=[st.capCo,JSON.stringify(st.sz),JSON.stringify(st.cyc),st.fundSize,st.seed,st.counts.join(','),st.nED,JSON.stringify(cum.cum),h[7],st.sg,st.sv,JSON.stringify(st.edT),JSON.stringify(st.regP),st.inv,st.carry].join('|');
+  if(tot>0&&N>0&&shareCache.key!==key){const pts=[];
+    for(const x of [0,.1,.2,.3,.4,.5]){const ne=Math.round(tot*x),nv=tot-ne;const c=allocate(st.counts.map(v=>v+1e-9),Math.min(nv,40));
+      const bud=st.fundSize*(1-(ne?x:0)),_e2=expDollars(st.sz),ei=_e2.ini,ef=_e2.fol;
+      const M2=Object.assign({},cum,{sz:Object.assign({},st.sz,{scale:st.sz.scale*bud/(Math.max(1,nv)*(ei+ef))})});
+      const f=fundRun(sim,c,M2,lo,h,vidx,edCfg(ne?x:0,ne));const ss=stats(netOf(f,st.inv,st.carry));pts.push([x,ss.p_lt1,ss.mean])}
+    shareCache={key,pts}}
+  drawShare(shareCache.pts,sh,F);
+}
+function drawShare(pts,cur,F){
+  if(!pts){$('sharechart').innerHTML='';return}
+  const W=460,H=260,m={l:44,r:44,t:14,b:34},X=v=>m.l+v/.5*(W-m.l-m.r);
+  const pmax=Math.max(.1,...pts.map(p=>p[1]))*1.15,mmax=Math.max(1,...pts.map(p=>p[2]))*1.15;
+  const Yp=v=>H-m.b-v/pmax*(H-m.t-m.b),Ym=v=>H-m.b-v/mmax*(H-m.t-m.b);
+  let g='';niceTicks(0,pmax,4).forEach(t=>g+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Yp(t)}" y2="${Yp(t)}" stroke="var(--soft)"/><text x="${m.l-6}" y="${Yp(t)+4}" text-anchor="end">${Math.round(t*100)}%</text>`);
+  niceTicks(0,mmax,4).forEach(t=>g+=`<text x="${W-m.r+6}" y="${Ym(t)+4}">${t.toFixed(1)}x</text>`);
+  pts.forEach(p=>g+=`<text x="${X(p[0])}" y="${H-m.b+16}" text-anchor="middle">${Math.round(p[0]*100)}%</text>`);
+  g+=`<line x1="${X(cur)}" x2="${X(cur)}" y1="${m.t}" y2="${H-m.b}" stroke="var(--warn)" stroke-width="2" stroke-dasharray="4 3"/>`;
+  g+=`<polyline fill="none" stroke="var(--bad)" stroke-width="2.5" points="${pts.map(p=>X(p[0])+','+Yp(p[1])).join(' ')}"/>`+pts.map(p=>`<circle cx="${X(p[0])}" cy="${Yp(p[1])}" r="3.5" fill="var(--bad)"><title>${pct(p[1])}</title></circle>`).join('');
+  g+=`<polyline fill="none" stroke="var(--accent)" stroke-width="2.5" points="${pts.map(p=>X(p[0])+','+Ym(p[2])).join(' ')}"/>`+pts.map(p=>`<circle cx="${X(p[0])}" cy="${Ym(p[2])}" r="3.5" fill="var(--accent)"><title>${fmtx(p[2])}</title></circle>`).join('');
+  g+=`<text x="${(W)/2}" y="${H-4}" text-anchor="middle">ED share of fund (total companies held fixed)</text>`;
+  $('sharechart').innerHTML=g;
+}
+function drawHist(nt,s){
+  const W=720,H=260,m={l:44,r:12,t:12,b:34},edges=[];for(let x=0;x<=6.0001;x+=0.25)edges.push(+x.toFixed(2));
+  const nb=edges.length,c=new Array(nb).fill(0);for(const x of nt){let b=Math.min(nb-1,Math.floor(x/0.25));c[b]++}
+  const S=nt.length||1,fr=c.map(x=>x/S),ymax=Math.max(.02,...fr)*1.1,bw=(W-m.l-m.r)/nb;
+  const y=v=>H-m.b-(v/ymax)*(H-m.t-m.b);
+  let g='';for(let t=0;t<=ymax;t+=ymax>.15?.05:.02){g+=`<line x1="${m.l}" x2="${W-m.r}" y1="${y(t)}" y2="${y(t)}" stroke="var(--soft)"/><text x="${m.l-6}" y="${y(t)+4}" text-anchor="end">${Math.round(t*100)}%</text>`}
+  fr.forEach((f,i)=>{const x0=edges[i],col=x0<1?'var(--bad)':x0>=st.target?'var(--good)':'var(--accent)';
+    g+=`<rect x="${m.l+i*bw+1}" y="${y(f)}" width="${bw-2}" height="${H-m.b-y(f)}" fill="${col}" opacity=".85"><title>${i===nb-1?'6x+':x0+'–'+(x0+.25)+'x'}: ${pct(f)}</title></rect>`});
+  [0,1,2,3,4,5,6].forEach(v=>{const x=m.l+v/0.25*bw;g+=`<text x="${x}" y="${H-m.b+16}" text-anchor="middle">${v===6?'6x+':v+'x'}</text>`});
+  if(s){const xm=m.l+Math.min(s.median,6)/0.25*bw;g+=`<line x1="${xm}" x2="${xm}" y1="${m.t}" y2="${H-m.b}" stroke="var(--fg)" stroke-dasharray="3 3"/><text x="${xm+4}" y="${m.t+10}" style="fill:var(--fg)">median ${fmtx(s.median)}</text>`}
+  g+=`<text x="${(W)/2}" y="${H-4}" text-anchor="middle">fund TVPI (red = below 1x, green = at or above target)</text>`;
+  $('hist').innerHTML=g;
+}
+function drawBuckets(p){
+  const N=st.counts.reduce((a,b)=>a+b,0);const W=720,H=200,m={l:44,r:12,t:12,b:30};
+  const agg=new Array(8).fill(0);p.forEach((r,i)=>r.forEach((x,b)=>agg[b]+=N?x*st.counts[i]/N:0));
+  const ymax=Math.max(.05,...agg)*1.1,bw=(W-m.l-m.r)/8,y=v=>H-m.b-(v/ymax)*(H-m.t-m.b);
+  let g='';for(let t=0;t<=ymax;t+=.1){g+=`<line x1="${m.l}" x2="${W-m.r}" y1="${y(t)}" y2="${y(t)}" stroke="var(--soft)"/><text x="${m.l-6}" y="${y(t)+4}" text-anchor="end">${Math.round(t*100)}%</text>`}
+  agg.forEach((a,b)=>{const x=m.l+b*bw;g+=`<rect x="${x+6}" y="${y(a)}" width="${bw-12}" height="${H-m.b-y(a)}" fill="${b<2?'var(--bad)':b>=4?'var(--good)':'var(--accent)'}" opacity=".8"/>
+   <text x="${x+bw/2}" y="${y(a)-4}" text-anchor="middle" style="fill:var(--fg)">${(a*100).toFixed(a<.01?1:0)}%</text><text x="${x+bw/2}" y="${H-m.b+16}" text-anchor="middle">${D.buckets[b].replace(' (write-off)','')}</text>`});
+  $('bucketchart').innerHTML=g;
+}
+function drawFrontier(){
+  const W=460,H=320,m={l:48,r:14,t:14,b:40},pts=st.cloud;
+  const allx=pts.map(p=>p[0]),ally=pts.map(p=>p[1]);const cur=st.current;
+  const opt=['success','mean','downside','equal'].map(k=>st.presets[k]).filter(Boolean);
+  opt.forEach(o=>{allx.push(o.stats.p_lt1);ally.push(o.stats.mean)});if(cur){allx.push(cur.p_lt1);ally.push(cur.mean)}
+  const x0=Math.max(0,Math.min(...allx)-.02),x1=Math.max(...allx)+.02,y0=Math.max(0,Math.min(...ally)-.1),y1=Math.max(...ally)+.1;
+  const X=v=>m.l+(v-x0)/(x1-x0)*(W-m.l-m.r),Y=v=>H-m.b-(v-y0)/(y1-y0)*(H-m.t-m.b);
+  let g='';const ty=niceTicks(y0,y1,5),tx=niceTicks(x0,x1,5);
+  ty.forEach(t=>g+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(t)}" y2="${Y(t)}" stroke="var(--soft)"/><text x="${m.l-6}" y="${Y(t)+4}" text-anchor="end">${t.toFixed(1)}x</text>`);
+  tx.forEach(t=>g+=`<text x="${X(t)}" y="${H-m.b+16}" text-anchor="middle">${Math.round(t*100)}%</text>`);
+  pts.forEach(p=>g+=`<circle cx="${X(p[0])}" cy="${Y(p[1])}" r="2" fill="var(--line)"/>`);
+  const lab={success:'1',mean:'2',downside:'3',equal:'EQ'};
+  ['success','mean','downside','equal'].forEach(k=>{const o=st.presets[k];if(!o)return;const cx=X(o.stats.p_lt1),cy=Y(o.stats.mean);
+    g+=`<circle cx="${cx}" cy="${cy}" r="5" fill="${k==='equal'?'var(--muted)':'var(--accent)'}"/><text x="${cx+7}" y="${cy-6}" style="fill:var(--fg)">${lab[k]}</text>`});
+  if(cur)g+=`<circle cx="${X(cur.p_lt1)}" cy="${Y(cur.mean)}" r="6" fill="none" stroke="var(--warn)" stroke-width="2.5"/>`;
+  g+=`<text x="${(W+m.l)/2}" y="${H-6}" text-anchor="middle">P(fund TVPI &lt; 1x) — lower is safer</text><text transform="translate(12 ${(H-m.b)/2}) rotate(-90)" text-anchor="middle">mean fund TVPI</text>`;
+  $('frontier').innerHTML=g;
+}
+function niceTicks(a,b,n){const step=Math.pow(10,Math.floor(Math.log10((b-a)/n))),e=(b-a)/n/step,s=(e>=5?10:e>=2?5:e>=1?2:1)*step/ (e>=5||e>=2?1:1);const out=[];for(let t=Math.ceil(a/s)*s;t<=b+1e-9;t+=s)out.push(+t.toFixed(6));return out}
+function renderOptTable(){
+  const P=st.presets,cols=[["success","1. Max P(≥ target)"],["mean","2. Max mean"],["downside","3. Downside-capped"],["equal","Equal weight"]];
+  let h='<thead><tr><th>VC deals</th>'+cols.map(c=>`<th>${c[1]}</th>`).join('')+'</tr></thead><tbody>';
+  D.subs.forEach((s,i)=>{h+=`<tr class="${i>0&&D.subs[i-1].vert!==s.vert?'vsep':''}"><td><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${VCOL[s.vert]};margin-right:6px"></span>${s.name}</td>`+cols.map(([k])=>{const v=P[k].counts[i];return `<td class="num">${v?v:'<span class="zero">0</span>'}</td>`}).join('')+'</tr>'});
+  const rows=[["Mean fund TVPI","mean",fmtx],["Median fund TVPI","median",fmtx],["P(fund < 1x)","p_lt1",pct],["P(fund ≥ 2x)","p_ge2",pct],["P(fund ≥ 3x)","p_ge3",pct]];
+  rows.forEach(([l,k,f],j)=>{h+=`<tr class="${j===0?'vsep':''}"><td class="objective">${l}</td>`+cols.map(([c])=>`<td class="num">${f(P[c].stats[k])}</td>`).join('')+'</tr>'});
+  h+='<tr><td></td>'+cols.map(([k])=>`<td><button class="btn" data-k="${k}">Load</button></td>`).join('')+'</tr></tbody>';
+  $('opttable').innerHTML=h;$('opttable').querySelectorAll('button').forEach(b=>b.onclick=()=>{st.counts=st.presets[b.dataset.k].counts.slice();update();window.scrollTo({top:0,behavior:'smooth'})});
+}
+function renderRobust(){const r=D.robust,w=r.wins_mean,T=r.trials;
+  $('robust').innerHTML=`<b>How much to trust the optimum.</b> When every assumption row was randomly perturbed ${T} times, the best mix on expected TVPI was: objective 1 in ${Math.round(w.success/T*100)}%, objective 2 in ${Math.round(w.mean/T*100)}%, objective 3 in ${Math.round(w.downside/T*100)}%, equal weight in ${Math.round(w.equal/T*100)}% of cases. Tilting toward the best-tailed rows usually beats equal weighting (median gain ${r.mean_gap_vs_equal.p50.toFixed(2)}x), but the exact deal counts are not stable. Treat the direction of the tilt as the signal. With a 25% ED sleeve, the ED share itself moves fund outcomes more than the VC vertical mix does.`}
+
+let worker=null;
+$('runopt').onclick=()=>{
+  const N=st.counts.reduce((a,b)=>a+b,0);if(N<4||N>40){$('optprog').textContent='Set 4–40 VC deals first';return}
+  const P={n:N,K,cum:cumM(),lo,hi:hiNow(),vidx,inv:st.inv,carry:st.carry,target:st.target,lossCap:st.lossCap,cap:.3,sg:st.sg,sv:st.sv,nv:3,ed:edCfg()};
+  $('runopt').disabled=true;$('optprog').textContent='Starting…';
+  const src=$('engine-src').textContent+`;onmessage=e=>{const out=optimize(e.data,m=>postMessage(m));postMessage({type:'done',out})}`;
+  try{worker=new Worker(URL.createObjectURL(new Blob([src],{type:'text/javascript'})));
+    worker.onmessage=e=>{if(e.data.type==='progress'){$('optprog').textContent=e.data.msg;return}
+      const {res,cloud}=e.data.out;st.presets=res;st.cloud=cloud;st.optDefault=false;$('runopt').disabled=false;
+      $('optprog').textContent=`Done: ${N} VC + ${st.nED} ED deals, current assumptions`;renderOptTable();update();worker.terminate()};
+    worker.postMessage(P);
+  }catch(err){$('optprog').textContent='Running in page (may pause briefly)…';setTimeout(()=>{const {res,cloud}=optimize(P,()=>{});st.presets=res;st.cloud=cloud;st.optDefault=false;$('runopt').disabled=false;$('optprog').textContent=`Done: ${N} deals`;renderOptTable();update()},30)}
+};
+let capRes=null;
+function parseList(x){return x.split(',').map(v=>parseFloat(v)).filter(v=>!isNaN(v)&&v>=0)}
+$('runcap').onclick=()=>{
+  const N=st.counts.reduce((a,b)=>a+b,0);if(!N){$('capprog').textContent='Add VC deals first';return}
+  const funds=parseList($('capfunds').value).map(v=>v*1e6),shares=parseList($('capshares').value).map(v=>Math.min(95,v)/100);
+  if(!funds.length||!shares.length){$('capprog').textContent='Enter at least one value in each list';return}
+  const shNow=st.nED?st.edShare:0,vcPer=st.fundSize*(1-shNow)/N,edPer=st.nED?st.fundSize*st.edShare/st.nED:D.fund.size*D.fund.ed_share/D.fund.n_ed;
+  const h=hiNow(),base=cumM(),cells=[];funds.forEach((F,i)=>shares.forEach((sh,j)=>cells.push({i,j,F,sh})));
+  const out=funds.map(()=>shares.map(()=>null));let k=0;$('runcap').disabled=true;
+  const step=()=>{const t0=performance.now();
+    while(k<cells.length&&performance.now()-t0<60){const c=cells[k++],nvc=Math.max(0,Math.round(c.F*(1-c.sh)/vcPer)),ned=c.sh>0?Math.min(EDMAX,Math.round(c.F*c.sh/edPer)):0;
+      const cnt=nvc?allocate(st.counts.map(v=>v+1e-9),nvc):st.counts.map(()=>0);
+      const sim=makeSim(4000,Math.max(1,nvc),21,st.sg,st.sv,3),M=Object.assign({},base,{F:c.F}),ed=edCfg(ned?c.sh:0,ned);
+      const f=fundRun(sim,cnt,M,lo,h,vidx,ed),ss=summarize(netOf(f,st.inv,st.carry),st.target);
+      out[c.i][c.j]=Object.assign(ss,{proceeds:ss.mean*c.F,nvc,ned})}
+    $('capprog').textContent=`${k}/${cells.length} cells`;
+    if(k<cells.length)setTimeout(step,0);else{funds.forEach((F,i)=>{const z=out[i][shares.indexOf(0)]??null;out[i].forEach(c=>c.edcost=z?z.proceeds-c.proceeds:null)});
+      capRes={funds,shares,out,vcPer,edPer};$('runcap').disabled=false;$('capprog').textContent='Done';drawCap()}};
+  step()};
+$('capmetric').onchange=()=>drawCap();
+function drawCap(){if(!capRes)return;const {funds,shares,out,vcPer,edPer}=capRes,m=$('capmetric').value;
+  const fm=c=>m==='counts'?`${c.nvc} / ${c.ned}`:m==='proceeds'?usd(c.proceeds):m==='edcost'?(c.edcost==null?'–':usd(c.edcost)):(m==='mean'||m==='median')?fmtx(c[m]):pct(c[m]);
+  const vals=out.flat().map(c=>m==='counts'?0:m==='proceeds'?c.proceeds:m==='edcost'?(c.edcost||0):c[m]),mn=Math.min(...vals),mx=Math.max(...vals);
+  const good=m!=='p_lt1'&&m!=='edcost';
+  let h='<thead><tr><th>Capital \\ ED share</th>'+shares.map(x=>`<th>${Math.round(x*100)}%</th>`).join('')+'</tr></thead><tbody>';
+  funds.forEach((F,i)=>{h+=`<tr><td><b>${usd(F)}</b></td>`+shares.map((x,j)=>{const c=out[i][j],v=vals[i*shares.length+j],t=mx>mn?(v-mn)/(mx-mn):0,w=good?t:1-t;
+    const cur=Math.abs(F-st.fundSize)<1&&Math.abs(x-(st.nED?st.edShare:0))<1e-9;
+    return `<td class="num" style="background:color-mix(in srgb, ${w>.5?'var(--good)':'var(--bad)'} ${m==='counts'?0:Math.round(Math.abs(w-.5)*36)}%, transparent);${cur?'outline:2px solid var(--warn);outline-offset:-2px':''}">${fm(c)}</td>`}).join('')+'</tr>'});
+  $('captable').innerHTML=h+'</tbody>';
+  $('capnote2').textContent=`Average all-in per company held at ${usd(vcPer)} (VC) and ${usd(edPer)} (ED). Outlined cell = current plan. Green is better, red is worse.`}
+$('resetA').onclick=()=>{base=clone(D.subs);st.lossShift=0;st.tail=1;st.cap50=250;st.edT=clone(D.ed.tables);st.regP=clone(D.ed.regime_probs);st.sz=clone(D.sizing);st.cyc=clone(D.cycle);renderCycTable();renderSizingInputs();renderStress();renderATable();renderEDTable();renderED();update()};
+renderED();renderEDTable();renderCycTable();renderSizingInputs();renderPresets();renderTerms();renderStress();renderATable();renderOptTable();renderRobust();update();
+</script>
+
+</body>
+</html>
